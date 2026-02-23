@@ -8,59 +8,68 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-def run_koca_scraper():
-    # 1. 서버용 크롬 설정
+def test_koca_download():
     options = Options()
-    options.add_argument("--headless")  # 화면 없이 실행
+    options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     
-    # 다운로드 경로 설정 (GitHub 워크스페이스 내 temp 폴더)
+    # 다운로드 폴더 설정
     download_dir = os.path.join(os.getcwd(), "downloads")
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
     
-    prefs = {"download.default_directory": download_dir}
+    prefs = {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "directory_upgrade": True
+    }
     options.add_experimental_option("prefs", prefs)
 
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
     try:
-        # 2. KOCA NOTAM 페이지 접속
+        print("1. KOCA 페이지 접속 중...")
         url = "https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR"
         driver.get(url)
-        print("페이지 접속 성공")
+        
+        # 페이지 로딩 대기
+        time.sleep(5)
 
-        # 3. [조회] 버튼 클릭 (데이터를 먼저 불러와야 KML 버튼이 활성화될 수 있음)
-        # KOCA 사이트 특성상 조회 버튼의 id나 class를 확인해야 합니다. 
-        # 보통 'btn_search' 또는 '조회' 텍스트를 가진 버튼입니다.
-        search_btn = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), '조회')]"))
+        print("2. [조회] 버튼 클릭 시도...")
+        # KOCA 사이트의 '조회' 버튼 XPath (일반적인 버튼 텍스트 기준)
+        search_btn = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(., '조회')] | //a[contains(., '조회')]"))
         )
         search_btn.click()
-        time.sleep(3) # 결과 로딩 대기
+        print("   - 조회 버튼 클릭 완료 (데이터 로딩 대기)")
+        time.sleep(5)
 
-        # 4. [KML] 다운로드 버튼 클릭
-        # 화면에 보이는 'KML' 버튼을 찾습니다.
-        kml_btn = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'KML')]"))
+        print("3. [KML] 다운로드 버튼 클릭 시도...")
+        # KML 버튼 XPath
+        kml_btn = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'KML')] | //a[contains(., 'KML')]"))
         )
         kml_btn.click()
-        print("KML 다운로드 클릭 완료")
+        print("   - KML 버튼 클릭 성공!")
 
-        # 다운로드 완료 대기
-        time.sleep(10)
+        # 다운로드 대기 (15초)
+        print("4. 파일 다운로드 대기 중 (15초)...")
+        time.sleep(15)
         
-        # 5. 다운로드된 파일 확인 및 가공
+        # 결과 확인
         files = os.listdir(download_dir)
-        print(f"다운로드된 파일들: {files}")
-        
-        # 여기서 파싱 로직(KML -> JSON)을 추가하고 DB로 쏘면 됩니다!
+        if files:
+            print(f"✅ 성공! 다운로드된 파일 목록: {files}")
+        else:
+            print("❌ 실패: 다운로드 폴더가 비어 있습니다.")
 
     except Exception as e:
-        print(f"에러 발생: {e}")
+        print(f"🚨 에러 발생: {e}")
+        # 에러 발생 시 현재 화면의 텍스트 일부 출력 (디버깅용)
+        print("현재 페이지 요약:", driver.title)
     finally:
         driver.quit()
 
 if __name__ == "__main__":
-    run_koca_scraper()
+    test_koca_download()
