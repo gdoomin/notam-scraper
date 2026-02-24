@@ -53,63 +53,69 @@ def run_scraper():
     wait = WebDriverWait(driver, 60)
 
     try:
-        print(f"🌐 KOCA 접속 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🌐 KOCA 접속 및 프레임 탐색 시작...")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(40) 
 
+        # --- [핵심] iframe 찾기 및 전환 ---
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        for i, frame in enumerate(iframes):
+            driver.switch_to.default_content()
+            driver.switch_to.frame(frame)
+            if len(driver.find_elements(By.ID, "notamSheet-table")) > 0:
+                print(f"✅ 데이터 프레임 발견 및 전환 성공 (Index: {i})")
+                break
+        
         last_first_id = ""
 
         for p in range(1, 11): 
             print(f"📄 {p}페이지 작업 시작...")
             
-            # --- 페이지 이동 로직 ---
-            if p > 1:
+            # 현재 프레임 안에서 ID 추출 시도
+            try:
+                current_id_el = driver.find_element(By.XPATH, '//*[@id="notamSheet-table"]/tbody/tr[1]/td[2]')
+                current_id = current_id_el.get_attribute("textContent").strip()
+                if not current_id: # 텍스트가 안 잡히면 JS로 시도
+                    current_id = driver.execute_script("return arguments[0].innerText;", current_id_el).strip()
+            except:
+                current_id = ""
+
+            if p == 1:
+                last_first_id = current_id
+                print(f"   -> 1페이지 기준 ID: {last_first_id}")
+            else:
+                # 페이지 이동 로직
                 try:
                     td_idx = p + 3
-                    # td 내부의 a 태그를 직접 조준
                     page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
                     
-                    page_td = wait.until(EC.presence_of_element_located((By.XPATH, page_xpath)))
-                    # td 안의 a 태그가 있으면 그것을, 없으면 td 자체를 클릭
-                    try:
-                        click_target = page_td.find_element(By.TAG_NAME, "a")
-                    except:
-                        click_target = page_td
-                    
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", click_target)
+                    # 프레임 안에서 버튼 찾기
+                    page_btn = wait.until(EC.presence_of_element_located((By.XPATH, page_xpath)))
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
                     time.sleep(1)
-                    driver.execute_script("arguments[0].click();", click_target)
-                    print(f"   -> {p}페이지 클릭 명령 전송 완료")
+                    driver.execute_script("arguments[0].click();", page_btn)
+                    print(f"   -> {p}페이지 클릭 완료. 갱신 대기...")
                     
-                    # --- [핵심] 데이터 갱신 검증 로직 ---
+                    # 데이터 갱신 확인
                     updated = False
-                    for _ in range(40):
+                    for _ in range(30):
                         time.sleep(1)
-                        try:
-                            # .text 대신 textContent 사용하여 그리드 내부 텍스트 강제 추출
-                            current_first_id = driver.find_element(By.XPATH, '//*[@id="notamSheet-table"]/tbody/tr[1]/td[2]').get_attribute("textContent").strip()
-                            if current_first_id and current_first_id != last_first_id:
-                                print(f"   -> [확인] 데이터 갱신됨: {last_first_id} -> {current_first_id}")
-                                last_first_id = current_first_id
-                                updated = True
-                                break
-                        except: pass
+                        new_id = driver.execute_script("return document.evaluate('//*[@id=\"notamSheet-table\"]/tbody/tr[1]/td[2]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.innerText;").strip()
+                        if new_id and new_id != last_first_id:
+                            print(f"   -> [확인] 데이터 갱신됨: {last_first_id} -> {new_id}")
+                            last_first_id = new_id
+                            updated = True
+                            break
                     
                     if not updated:
-                        print(f"   ⚠️ {p}페이지 데이터 갱신 확인 실패. (강제 10초 대기 후 진행)")
-                        time.sleep(10)
+                        print(f"   ⚠️ 데이터 갱신 확인 실패. (강제 진행)")
+                    time.sleep(5)
                 except Exception as e:
                     print(f"   -> 이동 에러: {e}")
                     break
-            else:
-                # 1페이지 초기 ID 확보 (textContent 사용)
-                time.sleep(5)
-                try:
-                    last_first_id = driver.find_element(By.XPATH, '//*[@id="notamSheet-table"]/tbody/tr[1]/td[2]').get_attribute("textContent").strip()
-                    print(f"   -> 1페이지 기준 ID: {last_first_id}")
-                except: print("   ⚠️ 1페이지 ID 확보 실패")
 
-            # --- 엑셀 다운로드 클릭 ---
+            # 엑셀 다운로드 (부모 페이지에 버튼이 있을 경우를 대비해 필요시 전환)
+            driver.switch_to.default_content()
             try:
                 excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
                 excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, excel_xpath)))
@@ -131,7 +137,11 @@ def run_scraper():
             except Exception as e:
                 print(f"   ⚠️ 다운로드 오류: {e}")
 
+            # 다음 페이지를 누르기 위해 다시 프레임으로 복귀
+            driver.switch_to.frame(iframes[i]) 
+
         # --- 데이터 병합 및 업로드 ---
+        driver.switch_to.default_content() # 최종 업로드 전 메인으로 복귀
         all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')]
         print(f"📂 병합 파일 수: {len(all_files)}")
         
@@ -139,8 +149,8 @@ def run_scraper():
         for f in all_files:
             try:
                 df_temp = pd.read_excel(f, engine='xlrd')
-                all_dfs.append(df_temp)
                 print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행")
+                all_dfs.append(df_temp)
             except: continue
 
         if all_dfs:
@@ -160,7 +170,7 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [최종완료] {len(notam_list)}건 '코숏' DB 업데이트 성공!")
+            print(f"🚀 [임무 완수] {len(notam_list)}건 '코숏' DB 업데이트 성공!")
 
     finally:
         driver.quit()
