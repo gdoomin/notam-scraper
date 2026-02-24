@@ -13,7 +13,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from supabase import create_client, Client
 
-# 1. 노탐 ID 추출용 정규표현식
 def find_notam_id_in_source(source):
     match = re.search(r'[A-Z]\d{4}/\d{2}', source)
     return match.group(0) if match else None
@@ -60,100 +59,99 @@ def run_scraper():
     actions = ActionChains(driver)
 
     try:
-        print(f"🌐 KOCA 346건 전수 수집 작전 개시... ({time.strftime('%H:%M:%S')})")
+        print(f"🌐 KOCA 346건 완전 정복 작전... ({time.strftime('%H:%M:%S')})")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(50) 
 
         last_page_id = ""
 
         for p in range(1, 11): 
-            print(f"📄 {p}페이지 시도 중...")
+            print(f"📄 {p}페이지 데이터 수집 시도...")
             
-            # 현재 페이지 ID 확보
+            # 1. 현재 페이지의 유니크한 ID 확보 (정규표현식 사용)
             current_id = find_notam_id_in_source(driver.page_source)
             
             if p == 1:
                 last_page_id = current_id
                 print(f"   -> 1페이지 기준 ID: {last_page_id}")
             else:
-                # --- 페이지 이동 (마우스 시뮬레이션 복구) ---
+                # --- 페이지 이동 전략 (숫자 텍스트 직접 찾기 추가) ---
                 try:
+                    # 방법 1: 기존 td 인덱스 방식 (td[5], td[6], td[7]...)
                     td_idx = p + 3
-                    page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
+                    page_xpath = f'//td[contains(@onclick, "search")]//font[text()="{p}"]' 
                     
-                    page_btn = wait.until(EC.presence_of_element_located((By.XPATH, page_xpath)))
-                    
-                    # 4페이지 element not interactable 방지를 위한 스크롤 및 대기
+                    # 만약 위 XPath가 안 먹히면 기존에 성공했던 td 인덱스로 백업
+                    try:
+                        page_btn = driver.find_element(By.XPATH, f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]')
+                    except:
+                        page_btn = driver.find_element(By.XPATH, f'//td[text()="{p}"]')
+
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
                     time.sleep(3)
 
-                    # 클릭 가능한 하위 요소(div, a 등) 타격
-                    try:
-                        click_target = page_btn.find_element(By.XPATH, ".//*[not(child::*)]")
-                    except:
-                        click_target = page_btn
-
-                    # [핵심] ActionChains로 마우스 이동 후 클릭 (100% 마우스 이벤트 발생)
-                    actions.move_to_element(click_target).click().perform()
-                    print(f"   -> {p}페이지 마우스 클릭 완료. 갱신 확인 중...")
+                    # 마우스 클릭 실행
+                    actions.move_to_element(page_btn).click().perform()
+                    print(f"   -> {p}페이지 마우스 클릭 실행됨. 데이터 로딩 대기...")
                     
-                    # 데이터 갱신 검증
+                    # 2. 데이터 갱신 검증 (4페이지 돌파를 위해 대기 시간 연장)
                     updated = False
-                    for _ in range(45):
+                    for _ in range(60): # 60초까지 대기
                         time.sleep(1)
                         new_id = find_notam_id_in_source(driver.page_source)
                         if new_id and new_id != last_page_id:
-                            print(f"   -> [성공] 데이터 교체 확인: {last_page_id} -> {new_id}")
+                            print(f"   -> [성공] {p}페이지 데이터 교체 완료: {last_page_id} -> {new_id}")
                             last_page_id = new_id
                             updated = True
                             break
                     
                     if not updated:
-                        print(f"   ⚠️ {p}페이지 갱신 실패. 강제 진행 금지(동일 데이터 방지)")
-                        # 여기서 실패하면 굳이 다운로드 하지 않고 다음 루프로 넘어가거나 종료
-                        continue 
-                        
+                        print(f"   ⚠️ {p}페이지 갱신 확인 실패. (강제 다운로드 시도 방지 위해 skip)")
+                        continue # 갱신 안 됐으면 다운로드 건너뜀
+
                 except Exception as e:
-                    print(f"   -> {p}페이지 이동 불가(종료 예상): {e}")
+                    print(f"   -> {p}페이지 버튼을 더 이상 찾을 수 없습니다. (수집 완료 예상)")
                     break
 
-            # --- 엑셀 다운로드 (매 페이지마다 수행) ---
+            # --- 3. 엑셀 다운로드 및 파일명 변경 ---
             try:
-                excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
-                excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, excel_xpath)))
+                # 다운로드 버튼이 로딩 마스크에 가려졌을 수 있으므로 JS 클릭 사용
+                excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]')))
                 driver.execute_script("arguments[0].click();", excel_btn)
+                print(f"   -> {p}페이지 엑셀 다운로드 요청")
                 
                 renamed = False
                 for _ in range(60): 
                     time.sleep(1)
                     files = [f for f in os.listdir(download_dir) if not f.startswith('page_') and not f.endswith('.crdownload')]
                     if files:
-                        time.sleep(5)
+                        time.sleep(5) # 파일 쓰기 완료 대기
                         old_path = os.path.join(download_dir, files[0])
                         new_filename = f"page_{p}_notam.xls"
                         os.rename(old_path, os.path.join(download_dir, new_filename))
-                        print(f"   -> [파일확보] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
+                        print(f"   -> [확보] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
                         renamed = True
                         break
+                if not renamed: print(f"   ⚠️ {p}페이지 파일 확보 실패")
             except Exception as e:
-                print(f"   ⚠️ 다운로드 오류: {e}")
+                print(f"   ⚠️ 다운로드 버튼 클릭 실패: {e}")
 
-        # --- 데이터 병합 및 업로드 ---
+        # --- 4. 최종 데이터 병합 및 Supabase 전송 ---
         all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')]
-        print(f"📂 병합 파일 수: {len(all_files)}")
+        print(f"📂 병합 대상 파일: {len(all_files)}개")
         
         all_dfs = []
         for f in all_files:
             try:
                 df_temp = pd.read_excel(f, engine='xlrd')
                 all_dfs.append(df_temp)
-                print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행 추가")
+                print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행 추가됨")
             except: continue
 
         if all_dfs:
             full_df = pd.concat(all_dfs, ignore_index=True)
             full_df.drop_duplicates(subset=['Notam#'], keep='first', inplace=True)
-            print(f"✅ 최종 데이터 확보: {len(full_df)}건")
+            print(f"✅ 중복 제거 후 최종 데이터: {len(full_df)}건 확보!")
 
             notam_list = []
             for _, row in full_df.iterrows():
@@ -167,7 +165,7 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [최종성공] {len(notam_list)}건 'Doo GPX' 데이터 업데이트 완료!")
+            print(f"🚀 [최종 임무 성공] {len(notam_list)}건의 노탐이 '코숏' DB에 저장되었습니다!")
 
     finally:
         driver.quit()
