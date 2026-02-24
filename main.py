@@ -15,7 +15,6 @@ from supabase import create_client, Client
 
 # 1. 노탐 ID 추출용 정규표현식
 def find_notam_id_in_source(source):
-    # A1234/26, Z0105/26 등의 패턴 탐색
     match = re.search(r'[A-Z]\d{4}/\d{2}', source)
     return match.group(0) if match else None
 
@@ -60,14 +59,14 @@ def run_scraper():
     wait = WebDriverWait(driver, 60)
 
     try:
-        print(f"🌐 KOCA 345건 전원 구조 작전 개시... ({time.strftime('%H:%M:%S')})")
+        print(f"🌐 KOCA 345건 완전 정복 작전 재개... ({time.strftime('%H:%M:%S')})")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
-        time.sleep(50) # 초기 렌더링 대기
+        time.sleep(55) # 초기 로딩 시간을 더 넉넉히 줍니다.
 
         last_page_id = ""
 
         for p in range(1, 11): 
-            print(f"📄 {p}페이지 수집 작업 중...")
+            print(f"📄 {p}페이지 수집 작업 시작...")
             
             # 현재 페이지 ID 확보
             current_id = find_notam_id_in_source(driver.page_source)
@@ -76,26 +75,24 @@ def run_scraper():
                 last_page_id = current_id
                 print(f"   -> 1페이지 ID 확보: {last_page_id}")
             else:
-                # --- [수정] 245건 성공 로직 + 유연한 XPath ---
+                # --- [핵심] 절대 경로 기반 무한 재검색 클릭 ---
                 try:
-                    # p번 페이지 버튼을 찾는 3단계 후보군
-                    xpaths = [
-                        f"//td[contains(@onclick, \"'{p}'\")]", # JS 함수 기반
-                        f"//font[text()='{p}']/parent::td",     # font 태그 기반
-                        f"//td[text()='{p}']"                   # 단순 텍스트 기반
-                    ]
+                    # 개발자님이 주신 그 정밀 XPath 기반 (p=2일 때 td[5], p=3일 때 td[6]...)
+                    target_xpath = f"/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{p+3}]"
                     
                     page_btn = None
-                    for xpath in xpaths:
+                    # 30초 동안 1초 간격으로 버튼이 나타날 때까지 끈질기게 찾습니다.
+                    for _ in range(30):
                         try:
-                            btn = driver.find_element(By.XPATH, xpath)
-                            if btn.is_displayed():
+                            btn = driver.find_element(By.XPATH, target_xpath)
+                            if btn.is_enabled():
                                 page_btn = btn
                                 break
-                        except: continue
+                        except: pass
+                        time.sleep(1)
 
                     if not page_btn:
-                        print(f"   -> {p}페이지 버튼을 못 찾았습니다. 수집을 종료합니다.")
+                        print(f"   -> {p}페이지 버튼을 끝내 찾지 못했습니다. (종료)")
                         break
 
                     # 스크롤 및 마우스 클릭 (ActionChains)
@@ -103,7 +100,7 @@ def run_scraper():
                     time.sleep(3)
                     
                     ActionChains(driver).move_to_element(page_btn).click().perform()
-                    print(f"   -> {p}페이지 마우스 클릭 완료. 데이터 갱신 확인 중...")
+                    print(f"   -> {p}페이지 마우스 정밀 클릭 완료. 갱신 확인 중...")
                     
                     # 데이터 갱신 확인 (최대 60초)
                     updated = False
@@ -111,25 +108,26 @@ def run_scraper():
                         time.sleep(1)
                         new_id = find_notam_id_in_source(driver.page_source)
                         if new_id and new_id != last_page_id:
-                            print(f"   -> [성공] 데이터 교체 완료: {last_page_id} -> {new_id}")
+                            print(f"   -> [성공] 데이터 교체 확인: {last_page_id} -> {new_id}")
                             last_page_id = new_id
                             updated = True
                             break
                     
                     if not updated:
-                        print(f"   ⚠️ {p}페이지 갱신 실패. JS로 강제 클릭...")
+                        print(f"   ⚠️ 갱신 미확인. JS로 강제 타격 시도...")
                         driver.execute_script("arguments[0].click();", page_btn)
                         time.sleep(10)
                         
                 except Exception as e:
-                    print(f"   -> {p}페이지 이동 중 에러 발생: {e}")
+                    print(f"   -> {p}페이지 이동 실패: {e}")
                     break
 
-            # --- 엑셀 다운로드 ---
+            # --- 엑셀 다운로드 (245건 성공 로직 유지) ---
             try:
-                excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]')))
+                excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
+                excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, excel_xpath)))
                 driver.execute_script("arguments[0].click();", excel_btn)
-                print(f"   -> {p}페이지 다운로드 요청 완료")
+                print(f"   -> {p}페이지 다운로드 버튼 클릭")
                 
                 renamed = False
                 for _ in range(60): 
@@ -140,11 +138,11 @@ def run_scraper():
                         old_path = os.path.join(download_dir, files[0])
                         new_filename = f"page_{p}_notam.xls"
                         os.rename(old_path, os.path.join(download_dir, new_filename))
-                        print(f"   -> [파일확보] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
+                        print(f"   -> [확보] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
                         renamed = True
                         break
             except Exception as e:
-                print(f"   ⚠️ {p}페이지 다운로드 에러: {e}")
+                print(f"   ⚠️ 다운로드 오류: {e}")
 
         # --- 데이터 병합 및 DB 동기화 ---
         all_files = sorted([os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')])
@@ -175,12 +173,12 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
 
-            # DB 초기화 및 업로드 (KoShort 앱 데이터 정합성 유지)
-            print("🧹 이전 노탐 데이터 삭제 중...")
+            # DB 청소 및 최신 데이터 주입
+            print("🧹 이전 노탐 청소 중...")
             supabase.table("notams").delete().neq("notam_id", "0").execute()
             
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [동기화 완료] 총 {len(notam_list)}건의 최신 노탐이 '코숏' DB에 반영되었습니다!")
+            print(f"🚀 [최종 성공] {len(notam_list)}건의 데이터를 '코숏' DB에 반영했습니다!")
 
     finally:
         driver.quit()
