@@ -58,7 +58,7 @@ def run_scraper():
     wait = WebDriverWait(driver, 30)
 
     try:
-        print(f"🌐 KOCA 345건 끝장내기 작전... ({time.strftime('%H:%M:%S')})")
+        print(f"🌐 KOCA 345건 전수 수집(중간 누락 방지 모드)... ({time.strftime('%H:%M:%S')})")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(50) 
 
@@ -67,75 +67,51 @@ def run_scraper():
         for p in range(1, 11): 
             print(f"📄 {p}페이지 작업 시작...")
             
-            # 현재 페이지 ID 확보 (성공했던 정규표현식 방식)
+            # 현재 페이지 ID 확보
             current_id = find_notam_id_in_source(driver.page_source)
             
             if p == 1:
                 last_page_id = current_id
-                print(f"   -> 1페이지 ID: {last_page_id}")
+                print(f"   -> 1페이지 ID 확보: {last_page_id}")
             else:
-                # --- [수정] 가장 유연한 페이지 버튼 찾기 ---
+                # --- [핵심 수정] 숫자 'p'가 인자로 들어간 JS 함수를 가진 버튼만 정밀 타격 ---
+                # 'notamSearch' 혹은 'search' 함수에 숫자 p가 들어간 요소를 찾습니다.
+                # 예: onclick="notamSearch('3')"
+                target_xpath = f"//td[contains(@onclick, \"'{p}'\")]"
+                
                 try:
-                    # 숫자 p를 포함하는 모든 클릭 가능성 있는 요소를 다 뒤집니다.
-                    possible_xpaths = [
-                        f"//td[text()='{p}']",
-                        f"//font[text()='{p}']/parent::td",
-                        f"//a[text()='{p}']",
-                        f"//span[text()='{p}']",
-                        f"/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{p+3}]"
-                    ]
-                    
-                    page_btn = None
-                    for xpath in possible_xpaths:
-                        try:
-                            elements = driver.find_elements(By.XPATH, xpath)
-                            for el in elements:
-                                if el.is_displayed():
-                                    page_btn = el
-                                    break
-                            if page_btn: break
-                        except: continue
-
-                    if not page_btn:
-                        raise Exception(f"{p}페이지 버튼을 찾을 수 없음")
-
-                    # 스크롤 및 클릭 (ActionChains 재도입)
+                    page_btn = wait.until(EC.presence_of_element_located((By.XPATH, target_xpath)))
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
                     time.sleep(3)
                     
-                    actions = ActionChains(driver)
-                    actions.move_to_element(page_btn).click().perform()
-                    print(f"   -> {p}페이지 클릭 명령 완료. 데이터 교체 대기...")
+                    # 마우스 클릭 (ActionChains)
+                    ActionChains(driver).move_to_element(page_btn).click().perform()
+                    print(f"   -> {p}페이지 정밀 타격 클릭 완료. 교체 대기...")
                     
-                    # 데이터 갱신 확인 (최대 60초)
+                    # 데이터 갱신 확인
                     updated = False
                     for _ in range(60):
                         time.sleep(1)
                         new_id = find_notam_id_in_source(driver.page_source)
                         if new_id and new_id != last_page_id:
-                            print(f"   -> [확인] 데이터 갱신 성공: {last_page_id} -> {new_id}")
+                            print(f"   -> [성공] 데이터 교체 확인: {last_page_id} -> {new_id}")
                             last_page_id = new_id
                             updated = True
                             break
                     
                     if not updated:
-                        print(f"   ⚠️ 갱신 실패. JS 강제 클릭 시도...")
+                        print(f"   ⚠️ 갱신 실패. JS 강제 실행 시도...")
                         driver.execute_script("arguments[0].click();", page_btn)
                         time.sleep(10)
-                        # ID 다시 확인
-                        new_id = find_notam_id_in_source(driver.page_source)
-                        last_page_id = new_id if new_id else last_page_id
                         
                 except Exception as e:
-                    print(f"   -> {p}페이지 탐색 종료: {e}")
+                    print(f"   -> {p}페이지 버튼 탐색 실패 (수집 종료 예상)")
                     break
 
-            # --- 엑셀 다운로드 (245건 성공했을 때의 로직 그대로) ---
+            # --- 엑셀 다운로드 및 파일명 변경 ---
             try:
-                excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
-                excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, excel_xpath)))
+                excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]')))
                 driver.execute_script("arguments[0].click();", excel_btn)
-                print(f"   -> {p}페이지 다운로드 요청")
                 
                 renamed = False
                 for _ in range(60): 
@@ -149,20 +125,20 @@ def run_scraper():
                         print(f"   -> [확보] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
                         renamed = True
                         break
-                if not renamed: print(f"   ⚠️ {p}페이지 파일 확보 실패")
             except Exception as e:
-                print(f"   ⚠️ 다운로드 버튼 클릭 실패: {e}")
+                print(f"   ⚠️ 다운로드 오류: {e}")
 
         # --- 병합 및 업로드 ---
         all_files = sorted([os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')])
-        print(f"📂 병합 리스트: {[os.path.basename(f) for f in all_files]}")
+        print(f"📂 병합 파일 목록: {[os.path.basename(f) for f in all_files]}")
         
         all_dfs = []
         for f in all_files:
             try:
                 df_temp = pd.read_excel(f, engine='xlrd')
+                # 345건 체크를 위해 행 개수 출력
+                print(f"   -> {os.path.basename(f)} 읽기 성공: {len(df_temp)}행")
                 all_dfs.append(df_temp)
-                print(f"   -> {os.path.basename(f)}: {len(df_temp)}행 읽기 성공")
             except: continue
 
         if all_dfs:
