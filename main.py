@@ -10,9 +10,10 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
 from supabase import create_client, Client
 
-# 1. 노탐 ID 추출용 정규표현식
+# 1. 노탐 ID 추출용 정규표현식 (Z0105/26 등)
 def find_notam_id_in_source(source):
     match = re.search(r'[A-Z]\d{4}/\d{2}', source)
     return match.group(0) if match else None
@@ -56,6 +57,7 @@ def run_scraper():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': download_dir})
     wait = WebDriverWait(driver, 60)
+    actions = ActionChains(driver)
 
     try:
         print(f"🌐 KOCA 접속 및 초기 렌더링 대기...")
@@ -74,28 +76,25 @@ def run_scraper():
                 last_page_id = current_id
                 print(f"   -> 1페이지 기준 ID 확보: {last_page_id}")
             else:
-                # --- 페이지 이동 (스크립트 직접 실행 방식) ---
+                # --- 페이지 이동 (마우스 시뮬레이션 방식) ---
                 try:
                     td_idx = p + 3
                     page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
                     
-                    # td 내부의 a 태그를 찾습니다.
                     target_td = wait.until(EC.presence_of_element_located((By.XPATH, page_xpath)))
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target_td)
+                    time.sleep(2)
+
+                    # td 내부의 모든 자식 요소(a, span, div 등) 중 클릭 가능한 놈 찾기
                     try:
-                        # a 태그의 href나 onclick에 있는 'javascript:movePage(2)' 같은 코드를 추출
-                        link_el = target_td.find_element(By.TAG_NAME, "a")
-                        js_code = link_el.get_attribute("href") or link_el.get_attribute("onclick")
-                        
-                        if js_code and "javascript:" in js_code:
-                            final_js = js_code.replace("javascript:", "")
-                            driver.execute_script(final_js)
-                            print(f"   -> [실행] JS 명령어 직접 호출: {final_js}")
-                        else:
-                            driver.execute_script("arguments[0].click();", link_el)
-                            print(f"   -> [클릭] a 태그 직접 클릭")
+                        clickable_element = target_td.find_element(By.XPATH, ".//*[not(child::*)]") # 가장 하위 자식 요소
+                        print(f"   -> [타격] 하위 요소 발견: {clickable_element.tag_name}")
                     except:
-                        driver.execute_script("arguments[0].click();", target_td)
-                        print(f"   -> [클릭] td 셀 클릭")
+                        clickable_element = target_td
+
+                    # ActionChains로 정밀 클릭
+                    actions.move_to_element(clickable_element).click().perform()
+                    print(f"   -> {p}페이지 마우스 클릭 실행 완료")
                     
                     # 데이터 갱신 검증
                     updated = False
@@ -109,7 +108,12 @@ def run_scraper():
                             break
                     
                     if not updated:
-                        print(f"   ⚠️ 데이터 갱신 실패. 현재 ID: {new_id if 'new_id' in locals() else 'N/A'}")
+                        print(f"   ⚠️ 데이터 갱신 실패. (현재 ID: {new_id if 'new_id' in locals() else 'N/A'})")
+                        # 마지막 수단: 엔터키 입력 시뮬레이션
+                        clickable_element.send_keys("\n")
+                        print(f"   -> [재시도] 엔터키 입력 신호 전송")
+                        time.sleep(5)
+                    
                     time.sleep(5)
                 except Exception as e:
                     print(f"   -> 페이지 이동 실패: {e}")
