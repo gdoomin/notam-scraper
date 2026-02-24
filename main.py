@@ -37,59 +37,74 @@ def run_scraper():
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     download_dir = os.path.join(os.getcwd(), "downloads")
-    if not os.path.exists(download_dir): os.makedirs(download_dir)
+    # 실행 전 다운로드 디렉토리 정리 (이전 파일 섞임 방지)
+    if os.path.exists(download_dir):
+        import shutil
+        shutil.rmtree(download_dir)
+    os.makedirs(download_dir)
+
     prefs = {"download.default_directory": download_dir, "safebrowsing.enabled": True}
     options.add_experimental_option("prefs", prefs)
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    wait = WebDriverWait(driver, 30)
 
     try:
         print("🌐 KOCA 페이지 접속 중...")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
-        
-        # 1. 충분한 초기 로딩 대기
-        wait = WebDriverWait(driver, 30)
         time.sleep(20) 
 
-        print("🎯 제공된 XPath로 엑셀 버튼 정밀 조준...")
-        target_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
-        
-        try:
-            # 2. 요소가 나타날 때까지 대기 후 가져오기
+        # 1. 전체 페이지 수 파악 (페이지네이션 분석)
+        # 보통 'a' 태그 중 숫자로 된 마지막 요소를 찾습니다.
+        page_elements = driver.find_elements(By.CSS_SELECTOR, ".pagination a, .paging a")
+        page_numbers = [int(el.text) for el in page_elements if el.text.isdigit()]
+        total_pages = max(page_numbers) if page_numbers else 1
+        print(f"📊 탐색된 총 페이지 수: {total_pages}")
+
+        for p in range(1, total_pages + 1):
+            print(f"📄 {p} / {total_pages} 페이지 처리 중...")
+            
+            if p > 1:
+                # 페이지 번호 클릭
+                page_btn = wait.until(EC.element_to_be_clickable((By.XPATH, f"//a[text()='{p}']")))
+                driver.execute_script("arguments[0].click();", page_btn)
+                time.sleep(10) # 테이블 갱신 대기
+
+            # 2. 엑셀 버튼 클릭 (제공된 XPath 사용)
+            target_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
             excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, target_xpath)))
-            
-            # 3. 화면 중앙으로 스크롤 (클릭 미스 방지)
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", excel_btn)
-            time.sleep(2)
+            time.sleep(1)
+            driver.execute_script("arguments[0].click();", excel_btn)
             
-            # 4. 일반 클릭 시도 후 안되면 JS 클릭
-            try:
-                excel_btn.click()
-                print("✅ 일반 클릭 성공")
-            except:
-                driver.execute_script("arguments[0].click();", excel_btn)
-                print("✅ 자바스크립트 강제 클릭 성공")
-                
-        except Exception as e:
-            print(f"🚨 XPath로 버튼을 찾지 못했습니다: {e}")
-            driver.save_screenshot("xpath_error.png")
-            # 디버깅을 위해 페이지 내 모든 'a' 태그 갯수 출력
-            links = driver.find_elements(By.TAG_NAME, "a")
-            print(f"💡 현재 페이지 내 총 {len(links)}개의 링크가 존재합니다.")
-            return
+            # 각 페이지 다운로드 대기
+            time.sleep(15)
 
-        print("⏳ 다운로드 대기 (40초)...")
-        time.sleep(40)
+        print("⏳ 모든 파일 다운로드 완료 대기...")
+        time.sleep(10)
 
-        # 5. 파일 확인 및 처리
-        files = [f for f in os.listdir(download_dir) if f.endswith(('.xls', '.xlsx'))]
+        # 3. 다운로드된 모든 파일 읽기 및 병합
+        files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.endswith(('.xls', '.xlsx'))]
         if not files:
-            print("🚨 파일 다운로드 실패. 목록:", os.listdir(download_dir))
+            print("🚨 다운로드된 파일이 없습니다.")
             return
 
-        file_path = os.path.join(download_dir, files[-1])
-        df = pd.read_excel(file_path, engine='xlrd')
+        print(f"📂 총 {len(files)}개의 파일 병합 중...")
+        all_dfs = []
+        for f in files:
+            try:
+                temp_df = pd.read_excel(f, engine='xlrd')
+                all_dfs.append(temp_df)
+            except Exception as e:
+                print(f"⚠️ 파일 읽기 실패({f}): {e}")
+
+        df = pd.concat(all_dfs, ignore_index=True)
         
+        # 중복 데이터 제거 (Notam# 기준)
+        df.drop_duplicates(subset=['Notam#'], keep='first', inplace=True)
+        print(f"✅ 중복 제거 후 총 {len(df)}개의 노탐 데이터 확보")
+
+        # 4. 데이터 가공 및 Supabase 업로드
         notam_list = []
         for _, row in df.iterrows():
             notam_id = str(row.get('Notam#', ''))
@@ -108,10 +123,11 @@ def run_scraper():
 
         if notam_list:
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"✅ 성공: {len(notam_list)}개의 엑셀 데이터 업데이트 완료!")
+            print(f"🚀 최종 성공: {len(notam_list)}개의 전체 노탐 업데이트 완료!")
 
     except Exception as e:
-        print(f"🚨 에러: {e}")
+        print(f"🚨 에러 발생: {e}")
+        driver.save_screenshot("multi_page_error.png")
     finally:
         driver.quit()
 
