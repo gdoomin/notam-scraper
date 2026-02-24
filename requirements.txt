@@ -1,4 +1,5 @@
 selenium
 webdriver-manager
-fastkml
 supabase
+pandas
+xlrd==2.0.1
