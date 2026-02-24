@@ -78,34 +78,49 @@ def run_scraper():
                     print(f"   -> 더 이상 페이지가 없습니다. (종료)")
                     break
 
-            # A. 엑셀 다운로드 클릭
+           # ... (상단 설정 동일) ...
+
+            # 1. 엑셀 다운로드 클릭
             excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
             excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, excel_xpath)))
             driver.execute_script("arguments[0].click();", excel_btn)
-            print(f"   -> {p}페이지 다운로드 요청")
+            print(f"   -> {p}페이지 다운로드 요청 완료")
             
-            # B. 파일 이름 즉시 변경 (중복 방지 핵심 로직)
+            # 2. 파일 다운로드 완료 및 이름 변경 대기 (강화된 로직)
             renamed = False
-            for _ in range(30): # 최대 30초 대기
-                time.sleep(1)
-                # 다운로드 중인 임시 파일(.crdownload) 제외하고 실제 파일만 목록화
-                current_files = [f for f in os.listdir(download_dir) if not f.endswith('.crdownload') and not f.startswith('page_')]
+            timeout = 45 # 최대 45초까지 대기 시간 확장
+            start_wait = time.time()
+            
+            while time.time() - start_wait < timeout:
+                # 'page_'로 시작하지 않는 새로운 파일이 생겼는지 확인
+                current_files = [f for f in os.listdir(download_dir) 
+                                if not f.endswith('.crdownload') 
+                                and not f.startswith('page_')
+                                and f.endswith(('.xls', '.xlsx'))]
+                
                 if current_files:
+                    # 파일이 발견되면 즉시 이름 변경
                     target_file = current_files[0]
                     old_path = os.path.join(download_dir, target_file)
                     new_filename = f"page_{p}_{target_file}"
                     new_path = os.path.join(download_dir, new_filename)
                     
                     try:
+                        # 파일이 완전히 써질 때까지 아주 잠깐 대기 후 이름 변경
+                        time.sleep(2) 
                         os.rename(old_path, new_path)
-                        print(f"   -> 파일 이름 변경 완료: {new_filename}")
+                        print(f"   -> [성공] {p}페이지 파일 확보: {new_filename}")
                         renamed = True
                         break
                     except Exception as e:
-                        print(f"   -> 이름 변경 대기 중... ({e})")
+                        # 파일이 다른 프로세스에서 사용 중일 경우 재시도
+                        pass
+                time.sleep(2) # 2초 간격으로 폴더 감시
                 
             if not renamed:
-                print(f"   ⚠️ {p}페이지 파일 다운로드 확인 실패")
+                print(f"   ⚠️ {p}페이지 파일 다운로드 확인 실패 (타임아웃)")
+
+# ... (이후 병합 로직 동일) ...
 
         # 3. 모든 개별 파일 병합
         all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith("page_")]
