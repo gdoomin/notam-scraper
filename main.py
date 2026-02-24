@@ -12,8 +12,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from supabase import create_client, Client
 
-# 1. 노탐 ID 추출용 정규표현식 (예: A1234/26, C0551/25 등)
+# 1. 노탐 ID 추출용 정규표현식
 def find_notam_id_in_source(source):
+    # A1234/26, Z0105/26 등의 패턴을 찾습니다.
     match = re.search(r'[A-Z]\d{4}/\d{2}', source)
     return match.group(0) if match else None
 
@@ -60,38 +61,37 @@ def run_scraper():
     try:
         print(f"🌐 KOCA 접속 및 초기 렌더링 대기...")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
-        time.sleep(45) # 그리드가 완전히 그려질 때까지 넉넉히 대기
+        time.sleep(45) 
 
         last_page_id = ""
 
         for p in range(1, 11): 
             print(f"📄 {p}페이지 데이터 수집 시도...")
             
-            # --- [핵심] 현재 페이지의 '지문'을 페이지 소스에서 추출 ---
+            # 현재 페이지 ID 확보
             current_id = find_notam_id_in_source(driver.page_source)
             
             if p == 1:
                 last_page_id = current_id
                 print(f"   -> 1페이지 기준 ID 확보: {last_page_id}")
             else:
-                # --- 페이지 이동 시도 ---
+                # 페이지 이동 시도
                 try:
                     td_idx = p + 3
-                    # 버튼의 가장 하위 요소까지 정밀 조준
                     page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
                     
                     page_btn = wait.until(EC.presence_of_element_located((By.XPATH, page_xpath)))
                     
-                    # 일반 클릭이 안 먹히므로, td 내부의 모든 요소를 포함해 강제 클릭
+                    # [수정] JS 이벤트를 true(소문자)로 전달하여 에러 해결
                     driver.execute_script("""
                         var target = arguments[0];
-                        var clickEvent = new MouseEvent('click', { 'view': window, 'bubbles': True, 'cancelable': True });
+                        var clickEvent = new MouseEvent('click', { 'view': window, 'bubbles': true, 'cancelable': true });
                         target.dispatchEvent(clickEvent);
                     """, page_btn)
                     
-                    print(f"   -> {p}페이지 클릭 명령 전송 완료. 갱신 검증 시작...")
+                    print(f"   -> {p}페이지 클릭 명령 전송 완료. 갱신 검증 중...")
                     
-                    # --- [핵심] 소스 내 ID가 바뀔 때까지 대기 ---
+                    # 데이터 갱신 대기
                     updated = False
                     for _ in range(40):
                         time.sleep(1)
@@ -103,18 +103,17 @@ def run_scraper():
                             break
                     
                     if not updated:
-                        print(f"   ⚠️ 데이터 갱신 미확인. (강제 진행)")
+                        print(f"   ⚠️ 데이터 갱신 미확인. (현재 ID: {new_id if 'new_id' in locals() else 'N/A'})")
                     time.sleep(5)
                 except Exception as e:
                     print(f"   -> 페이지 이동 실패: {e}")
                     break
 
-            # 엑셀 다운로드 (버튼 요소를 매번 새로 찾음)
+            # 엑셀 다운로드
             try:
                 excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]')))
                 driver.execute_script("arguments[0].click();", excel_btn)
                 
-                # 파일 확보 및 이름 변경
                 renamed = False
                 for _ in range(60): 
                     time.sleep(1)
@@ -130,7 +129,7 @@ def run_scraper():
             except Exception as e:
                 print(f"   ⚠️ 다운로드 오류: {e}")
 
-        # --- 데이터 병합 및 업로드 ---
+        # 병합 및 업로드
         all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')]
         print(f"📂 병합 파일 수: {len(all_files)}")
         
@@ -138,8 +137,8 @@ def run_scraper():
         for f in all_files:
             try:
                 df_temp = pd.read_excel(f, engine='xlrd')
-                print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행")
                 all_dfs.append(df_temp)
+                print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행")
             except: continue
 
         if all_dfs:
@@ -159,7 +158,7 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [최종성공] {len(notam_list)}건 '코숏' DB 업데이트 완료!")
+            print(f"🚀 [최종완료] {len(notam_list)}건 '코숏' DB 업데이트 성공!")
 
     finally:
         driver.quit()
