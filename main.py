@@ -26,7 +26,7 @@ def extract_coords(full_text):
     return 37.5665, 126.9780
 
 def run_scraper():
-    # 1. Supabase 및 디렉토리 설정
+    # 1. Supabase 및 환경 설정
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     supabase: Client = create_client(url, key)
@@ -36,7 +36,7 @@ def run_scraper():
         shutil.rmtree(download_dir)
     os.makedirs(download_dir)
 
-    # 2. 브라우저 옵션 설정
+    # 2. 브라우저 최적화 설정
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -54,85 +54,75 @@ def run_scraper():
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.set_page_load_timeout(180)
-    wait = WebDriverWait(driver, 40)
+    wait = WebDriverWait(driver, 45)
 
     try:
-        print("🌐 KOCA 접속 및 초기화...")
+        print("🌐 KOCA 접속 및 페이지 로딩 중...")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(30) 
 
-        print("📊 멀티 페이지 수집 및 파일 충돌 방지 로직 가동...")
+        print("📊 멀티 페이지 데이터 수집 가동 (Full Data Mode)...")
         
         for p in range(1, 11): 
-            print(f"📄 {p}페이지 작업 중...")
+            print(f"📄 {p}페이지 작업 시작...")
             
+            # --- 페이지 이동 로직 (보내주신 XPath 적용) ---
             if p > 1:
                 try:
-                    td_idx = p + 3 
-                    page_xpath = f'//*[@id="notamSheet-table"]/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
+                    td_idx = p + 3 # 2페이지=td[5], 3페이지=td[6] 규칙
+                    # 보내주신 전체 절대 경로 XPath 활용
+                    page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
+                    
                     page_btn = wait.until(EC.element_to_be_clickable((By.XPATH, page_xpath)))
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
+                    time.sleep(1)
                     driver.execute_script("arguments[0].click();", page_btn)
-                    print(f"   -> {p}페이지 이동 성공")
-                    time.sleep(15) 
-                except:
-                    print(f"   -> 더 이상 페이지가 없습니다. (종료)")
+                    print(f"   -> {p}페이지 이동 완료 (XPath 타격)")
+                    time.sleep(15) # 테이블 데이터 갱신 대기
+                except Exception as e:
+                    print(f"   -> 페이지 버튼(td[{p+3}])이 없거나 클릭 불가 (탐색 종료)")
                     break
 
-           # ... (상단 설정 동일) ...
-
-            # 1. 엑셀 다운로드 클릭
-            excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
-            excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, excel_xpath)))
-            driver.execute_script("arguments[0].click();", excel_btn)
-            print(f"   -> {p}페이지 다운로드 요청 완료")
-            
-            # 2. 파일 다운로드 완료 및 이름 변경 대기 (강화된 로직)
-            renamed = False
-            timeout = 45 # 최대 45초까지 대기 시간 확장
-            start_wait = time.time()
-            
-            while time.time() - start_wait < timeout:
-                # 'page_'로 시작하지 않는 새로운 파일이 생겼는지 확인
-                current_files = [f for f in os.listdir(download_dir) 
-                                if not f.endswith('.crdownload') 
-                                and not f.startswith('page_')
-                                and f.endswith(('.xls', '.xlsx'))]
+            # --- 엑셀 다운로드 클릭 (주신 XPath) ---
+            try:
+                excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
+                excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, excel_xpath)))
+                driver.execute_script("arguments[0].click();", excel_btn)
+                print(f"   -> {p}페이지 엑셀 다운로드 버튼 클릭")
                 
-                if current_files:
-                    # 파일이 발견되면 즉시 이름 변경
-                    target_file = current_files[0]
-                    old_path = os.path.join(download_dir, target_file)
-                    new_filename = f"page_{p}_{target_file}"
-                    new_path = os.path.join(download_dir, new_filename)
+                # --- 파일 이름 즉시 변경 (중복 방지 핵심) ---
+                renamed = False
+                for _ in range(45): # 최대 45초 대기
+                    time.sleep(1)
+                    current_files = [f for f in os.listdir(download_dir) 
+                                    if not f.startswith('page_') and not f.endswith('.crdownload')]
                     
-                    try:
-                        # 파일이 완전히 써질 때까지 아주 잠깐 대기 후 이름 변경
-                        time.sleep(2) 
+                    if current_files:
+                        time.sleep(2) # 파일 기록 완료 대기
+                        old_path = os.path.join(download_dir, current_files[0])
+                        new_filename = f"page_{p}_notam.xls"
+                        new_path = os.path.join(download_dir, new_filename)
                         os.rename(old_path, new_path)
-                        print(f"   -> [성공] {p}페이지 파일 확보: {new_filename}")
+                        print(f"   -> [확보] {new_filename} 저장 완료")
                         renamed = True
                         break
-                    except Exception as e:
-                        # 파일이 다른 프로세스에서 사용 중일 경우 재시도
-                        pass
-                time.sleep(2) # 2초 간격으로 폴더 감시
                 
-            if not renamed:
-                print(f"   ⚠️ {p}페이지 파일 다운로드 확인 실패 (타임아웃)")
+                if not renamed:
+                    print(f"   ⚠️ {p}페이지 파일 다운로드 확인 실패")
+                    
+            except Exception as e:
+                print(f"   ⚠️ {p}페이지 작업 중 오류 발생: {e}")
 
-# ... (이후 병합 로직 동일) ...
-
-        # 3. 모든 개별 파일 병합
-        all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith("page_")]
-        print(f"📂 총 {len(all_files)}개 파일 병합 시작...")
+        # 3. 데이터 병합 처리
+        all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')]
+        print(f"📂 총 {len(all_files)}개 파일 병합을 시작합니다.")
         
         all_dfs = []
         for f in all_files:
             try:
-                # KOCA 엑셀은 xlrd 엔진이 필요함
                 temp_df = pd.read_excel(f, engine='xlrd')
                 all_dfs.append(temp_df)
-                print(f"   -> {os.path.basename(f)} 읽기 완료 ({len(temp_df)}행)")
+                print(f"   -> {os.path.basename(f)} 읽기 완료: {len(temp_df)}행")
             except Exception as e:
                 print(f"   ⚠️ {f} 파싱 실패: {e}")
 
@@ -141,11 +131,10 @@ def run_scraper():
             return
         
         full_df = pd.concat(all_dfs, ignore_index=True)
-        # Notam# 컬럼 기준으로 중복 제거
         full_df.drop_duplicates(subset=['Notam#'], keep='first', inplace=True)
-        print(f"✅ 중복 제거 후 최종 {len(full_df)}건의 노탐 데이터 확보")
+        print(f"✅ 최종 유효 데이터 확보: {len(full_df)}건")
 
-        # 4. 가공 및 Supabase 업로드
+        # 4. Supabase Upsert
         notam_list = []
         for _, row in full_df.iterrows():
             notam_id = str(row.get('Notam#', ''))
@@ -160,11 +149,10 @@ def run_scraper():
 
         if notam_list:
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [최종 성공] {len(notam_list)}개의 노탐 데이터가 Supabase에 저장되었습니다!")
+            print(f"🚀 [최종 성공] {len(notam_list)}개의 데이터가 '코숏' DB에 업데이트되었습니다!")
 
     except Exception as e:
-        print(f"🚨 런타임 에러: {e}")
-        driver.save_screenshot("file_collision_debug.png")
+        print(f"🚨 치명적 에러 발생: {e}")
     finally:
         driver.quit()
 
