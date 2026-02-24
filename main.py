@@ -14,7 +14,6 @@ from supabase import create_client, Client
 
 # 1. 노탐 ID 추출용 정규표현식
 def find_notam_id_in_source(source):
-    # A1234/26, Z0105/26 등의 패턴을 찾습니다.
     match = re.search(r'[A-Z]\d{4}/\d{2}', source)
     return match.group(0) if match else None
 
@@ -75,23 +74,30 @@ def run_scraper():
                 last_page_id = current_id
                 print(f"   -> 1페이지 기준 ID 확보: {last_page_id}")
             else:
-                # 페이지 이동 시도
+                # --- 페이지 이동 (스크립트 직접 실행 방식) ---
                 try:
                     td_idx = p + 3
                     page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
                     
-                    page_btn = wait.until(EC.presence_of_element_located((By.XPATH, page_xpath)))
+                    # td 내부의 a 태그를 찾습니다.
+                    target_td = wait.until(EC.presence_of_element_located((By.XPATH, page_xpath)))
+                    try:
+                        # a 태그의 href나 onclick에 있는 'javascript:movePage(2)' 같은 코드를 추출
+                        link_el = target_td.find_element(By.TAG_NAME, "a")
+                        js_code = link_el.get_attribute("href") or link_el.get_attribute("onclick")
+                        
+                        if js_code and "javascript:" in js_code:
+                            final_js = js_code.replace("javascript:", "")
+                            driver.execute_script(final_js)
+                            print(f"   -> [실행] JS 명령어 직접 호출: {final_js}")
+                        else:
+                            driver.execute_script("arguments[0].click();", link_el)
+                            print(f"   -> [클릭] a 태그 직접 클릭")
+                    except:
+                        driver.execute_script("arguments[0].click();", target_td)
+                        print(f"   -> [클릭] td 셀 클릭")
                     
-                    # [수정] JS 이벤트를 true(소문자)로 전달하여 에러 해결
-                    driver.execute_script("""
-                        var target = arguments[0];
-                        var clickEvent = new MouseEvent('click', { 'view': window, 'bubbles': true, 'cancelable': true });
-                        target.dispatchEvent(clickEvent);
-                    """, page_btn)
-                    
-                    print(f"   -> {p}페이지 클릭 명령 전송 완료. 갱신 검증 중...")
-                    
-                    # 데이터 갱신 대기
+                    # 데이터 갱신 검증
                     updated = False
                     for _ in range(40):
                         time.sleep(1)
@@ -103,7 +109,7 @@ def run_scraper():
                             break
                     
                     if not updated:
-                        print(f"   ⚠️ 데이터 갱신 미확인. (현재 ID: {new_id if 'new_id' in locals() else 'N/A'})")
+                        print(f"   ⚠️ 데이터 갱신 실패. 현재 ID: {new_id if 'new_id' in locals() else 'N/A'}")
                     time.sleep(5)
                 except Exception as e:
                     print(f"   -> 페이지 이동 실패: {e}")
