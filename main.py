@@ -13,6 +13,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from supabase import create_client, Client
 
+# 1. 노탐 ID 추출용 정규표현식
 def find_notam_id_in_source(source):
     match = re.search(r'[A-Z]\d{4}/\d{2}', source)
     return match.group(0) if match else None
@@ -55,10 +56,10 @@ def run_scraper():
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': download_dir})
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 60)
 
     try:
-        print(f"🌐 KOCA 345건 전수 수집(중간 누락 방지 모드)... ({time.strftime('%H:%M:%S')})")
+        print(f"🌐 KOCA 전수 수집 및 DB 동기화 작전... ({time.strftime('%H:%M:%S')})")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(50) 
 
@@ -66,35 +67,28 @@ def run_scraper():
 
         for p in range(1, 11): 
             print(f"📄 {p}페이지 작업 시작...")
-            
-            # 현재 페이지 ID 확보
             current_id = find_notam_id_in_source(driver.page_source)
             
             if p == 1:
                 last_page_id = current_id
                 print(f"   -> 1페이지 ID 확보: {last_page_id}")
             else:
-                # --- [핵심 수정] 숫자 'p'가 인자로 들어간 JS 함수를 가진 버튼만 정밀 타격 ---
-                # 'notamSearch' 혹은 'search' 함수에 숫자 p가 들어간 요소를 찾습니다.
-                # 예: onclick="notamSearch('3')"
-                target_xpath = f"//td[contains(@onclick, \"'{p}'\")]"
-                
                 try:
+                    # [핵심] 숫자 인자 기반 JS 함수 타격
+                    target_xpath = f"//td[contains(@onclick, \"'{p}'\")]"
                     page_btn = wait.until(EC.presence_of_element_located((By.XPATH, target_xpath)))
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
                     time.sleep(3)
                     
-                    # 마우스 클릭 (ActionChains)
                     ActionChains(driver).move_to_element(page_btn).click().perform()
-                    print(f"   -> {p}페이지 정밀 타격 클릭 완료. 교체 대기...")
+                    print(f"   -> {p}페이지 정밀 클릭 완료. 교체 대기...")
                     
-                    # 데이터 갱신 확인
                     updated = False
                     for _ in range(60):
                         time.sleep(1)
                         new_id = find_notam_id_in_source(driver.page_source)
                         if new_id and new_id != last_page_id:
-                            print(f"   -> [성공] 데이터 교체 확인: {last_page_id} -> {new_id}")
+                            print(f"   -> [확인] 데이터 교체 완료: {last_page_id} -> {new_id}")
                             last_page_id = new_id
                             updated = True
                             break
@@ -103,12 +97,11 @@ def run_scraper():
                         print(f"   ⚠️ 갱신 실패. JS 강제 실행 시도...")
                         driver.execute_script("arguments[0].click();", page_btn)
                         time.sleep(10)
-                        
-                except Exception as e:
-                    print(f"   -> {p}페이지 버튼 탐색 실패 (수집 종료 예상)")
+                except:
+                    print(f"   -> {p}페이지 탐색 종료")
                     break
 
-            # --- 엑셀 다운로드 및 파일명 변경 ---
+            # 엑셀 다운로드
             try:
                 excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]')))
                 driver.execute_script("arguments[0].click();", excel_btn)
@@ -125,19 +118,14 @@ def run_scraper():
                         print(f"   -> [확보] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
                         renamed = True
                         break
-            except Exception as e:
-                print(f"   ⚠️ 다운로드 오류: {e}")
+            except: pass
 
-        # --- 병합 및 업로드 ---
+        # --- 데이터 병합 및 DB 동기화 ---
         all_files = sorted([os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')])
-        print(f"📂 병합 파일 목록: {[os.path.basename(f) for f in all_files]}")
-        
         all_dfs = []
         for f in all_files:
             try:
                 df_temp = pd.read_excel(f, engine='xlrd')
-                # 345건 체크를 위해 행 개수 출력
-                print(f"   -> {os.path.basename(f)} 읽기 성공: {len(df_temp)}행")
                 all_dfs.append(df_temp)
             except: continue
 
@@ -157,8 +145,16 @@ def run_scraper():
                     "start_date": str(row.get('Start Date UTC', '')),
                     "end_date": str(row.get('End Date UTC', ''))
                 })
+
+            # --- [핵심 추가] 기존 데이터 완전 삭제 로직 ---
+            print("🧹 만료된 노탐 청소 중 (Truncate)...")
+            # notam_id가 "0"이 아닌 모든 행 삭제 (전체 삭제와 동일한 효과)
+            supabase.table("notams").delete().neq("notam_id", "0").execute()
+            print("✨ DB가 깨끗하게 비워졌습니다.")
+
+            # 최신 데이터 업로드
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [임무 성공] {len(notam_list)}건 '코숏' DB 업데이트 완료!")
+            print(f"🚀 [동기화 성공] 현재 유효한 {len(notam_list)}건의 데이터만 DB에 유지됩니다!")
 
     finally:
         driver.quit()
