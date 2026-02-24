@@ -10,7 +10,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
 from supabase import create_client, Client
 
 def find_notam_id_in_source(source):
@@ -56,76 +55,75 @@ def run_scraper():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': download_dir})
     wait = WebDriverWait(driver, 60)
-    actions = ActionChains(driver)
 
     try:
-        print(f"🌐 KOCA 346건 완전 정복 작전... ({time.strftime('%H:%M:%S')})")
+        print(f"🌐 KOCA 346건 완전 정복 작전 개시... ({time.strftime('%H:%M:%S')})")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(50) 
 
         last_page_id = ""
 
         for p in range(1, 11): 
-            print(f"📄 {p}페이지 데이터 수집 시도...")
+            print(f"📄 {p}페이지 수집 시도 중...")
             
-            # 1. 현재 페이지의 유니크한 ID 확보 (정규표현식 사용)
+            # 현재 페이지 ID 확보
             current_id = find_notam_id_in_source(driver.page_source)
             
             if p == 1:
                 last_page_id = current_id
                 print(f"   -> 1페이지 기준 ID: {last_page_id}")
             else:
-                # --- 페이지 이동 전략 (숫자 텍스트 직접 찾기 추가) ---
+                # --- [핵심] 페이지 이동 (JS 직접 호출) ---
                 try:
-                    # 방법 1: 기존 td 인덱스 방식 (td[5], td[6], td[7]...)
+                    # KOCA 내부 함수인 notamSearch(p) 또는 movePage(p)를 직접 쏩니다.
+                    # td[idx]를 찾는 대신 버튼에 심긴 스크립트를 추출해 실행합니다.
                     td_idx = p + 3
-                    page_xpath = f'//td[contains(@onclick, "search")]//font[text()="{p}"]' 
+                    page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
                     
-                    # 만약 위 XPath가 안 먹히면 기존에 성공했던 td 인덱스로 백업
-                    try:
-                        page_btn = driver.find_element(By.XPATH, f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]')
-                    except:
-                        page_btn = driver.find_element(By.XPATH, f'//td[text()="{p}"]')
-
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
-                    time.sleep(3)
-
-                    # 마우스 클릭 실행
-                    actions.move_to_element(page_btn).click().perform()
-                    print(f"   -> {p}페이지 마우스 클릭 실행됨. 데이터 로딩 대기...")
+                    target_btn = driver.find_element(By.XPATH, page_xpath)
+                    # onclick 속성에 있는 "notamSearch('4')" 같은 스크립트 추출
+                    js_func = target_btn.get_attribute("onclick") or target_btn.find_element(By.TAG_NAME, "a").get_attribute("href")
                     
-                    # 2. 데이터 갱신 검증 (4페이지 돌파를 위해 대기 시간 연장)
+                    if js_func:
+                        clean_js = js_func.replace("javascript:", "")
+                        driver.execute_script(clean_js)
+                        print(f"   -> [JS 호출] {clean_js}")
+                    else:
+                        # 스크립트가 안 잡히면 강제 클릭
+                        driver.execute_script("arguments[0].click();", target_btn)
+                    
+                    # 데이터 갱신 검증 (시간을 더 넉넉히!)
                     updated = False
-                    for _ in range(60): # 60초까지 대기
+                    for _ in range(60): 
                         time.sleep(1)
                         new_id = find_notam_id_in_source(driver.page_source)
                         if new_id and new_id != last_page_id:
-                            print(f"   -> [성공] {p}페이지 데이터 교체 완료: {last_page_id} -> {new_id}")
+                            print(f"   -> [성공] {p}페이지 데이터 갱신 완료: {last_page_id} -> {new_id}")
                             last_page_id = new_id
                             updated = True
                             break
                     
                     if not updated:
-                        print(f"   ⚠️ {p}페이지 갱신 확인 실패. (강제 다운로드 시도 방지 위해 skip)")
-                        continue # 갱신 안 됐으면 다운로드 건너뜀
-
+                        print(f"   ⚠️ {p}페이지 갱신 실패. (이전 페이지와 동일 데이터 방지 위해 skip)")
+                        continue
                 except Exception as e:
-                    print(f"   -> {p}페이지 버튼을 더 이상 찾을 수 없습니다. (수집 완료 예상)")
+                    print(f"   -> {p}페이지 이동 불가 (종료): {e}")
                     break
 
-            # --- 3. 엑셀 다운로드 및 파일명 변경 ---
+            # --- 엑셀 다운로드 (데이터가 완전히 렌더링될 때까지 추가 대기) ---
             try:
-                # 다운로드 버튼이 로딩 마스크에 가려졌을 수 있으므로 JS 클릭 사용
-                excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]')))
+                time.sleep(5) 
+                excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
+                excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, excel_xpath)))
                 driver.execute_script("arguments[0].click();", excel_btn)
-                print(f"   -> {p}페이지 엑셀 다운로드 요청")
+                print(f"   -> {p}페이지 다운로드 요청 완료")
                 
                 renamed = False
                 for _ in range(60): 
                     time.sleep(1)
                     files = [f for f in os.listdir(download_dir) if not f.startswith('page_') and not f.endswith('.crdownload')]
                     if files:
-                        time.sleep(5) # 파일 쓰기 완료 대기
+                        time.sleep(5)
                         old_path = os.path.join(download_dir, files[0])
                         new_filename = f"page_{p}_notam.xls"
                         os.rename(old_path, os.path.join(download_dir, new_filename))
@@ -134,24 +132,24 @@ def run_scraper():
                         break
                 if not renamed: print(f"   ⚠️ {p}페이지 파일 확보 실패")
             except Exception as e:
-                print(f"   ⚠️ 다운로드 버튼 클릭 실패: {e}")
+                print(f"   ⚠️ {p}페이지 다운로드 에러: {e}")
 
-        # --- 4. 최종 데이터 병합 및 Supabase 전송 ---
-        all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')]
-        print(f"📂 병합 대상 파일: {len(all_files)}개")
+        # --- 데이터 병합 및 업로드 ---
+        all_files = sorted([os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')])
+        print(f"📂 병합 대상 파일 수: {len(all_files)}")
         
         all_dfs = []
         for f in all_files:
             try:
                 df_temp = pd.read_excel(f, engine='xlrd')
                 all_dfs.append(df_temp)
-                print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행 추가됨")
+                print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행 추가")
             except: continue
 
         if all_dfs:
             full_df = pd.concat(all_dfs, ignore_index=True)
             full_df.drop_duplicates(subset=['Notam#'], keep='first', inplace=True)
-            print(f"✅ 중복 제거 후 최종 데이터: {len(full_df)}건 확보!")
+            print(f"✅ 최종 중복 제거 결과: {len(full_df)}건 확보!")
 
             notam_list = []
             for _, row in full_df.iterrows():
@@ -165,7 +163,7 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [최종 임무 성공] {len(notam_list)}건의 노탐이 '코숏' DB에 저장되었습니다!")
+            print(f"🚀 [최종 성공] 총 {len(notam_list)}건 'Doo GPX' 데이터 업데이트 완료!")
 
     finally:
         driver.quit()
