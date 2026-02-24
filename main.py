@@ -49,109 +49,108 @@ def run_scraper():
     options.add_experimental_option("prefs", prefs)
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    # CDP 명령어로 헤드리스 다운로드 허용
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': download_dir})
-    wait = WebDriverWait(driver, 45)
+    wait = WebDriverWait(driver, 60)
 
     try:
         print(f"🌐 KOCA 접속 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
-        time.sleep(35) 
+        time.sleep(40) 
 
         last_first_id = ""
 
         for p in range(1, 11): 
             print(f"📄 {p}페이지 작업 시작...")
             
-            # --- 1페이지가 아닐 때만 페이지 이동 로직 실행 ---
             if p > 1:
                 try:
-                    td_idx = p + 3 
-                    # td 내부의 모든 클릭 가능한 요소를 포함하는 정밀 XPath
-                    page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
+                    # 1. 페이지 이동 실행 (JS 직접 호출 시도)
+                    # KOCA 사이트의 페이지네이션은 내부적으로 movePage(p) 또는 유사한 함수를 호출합니다.
+                    # 가장 확실한 방법은 버튼의 href나 onclick에 있는 스크립트를 직접 실행하는 것입니다.
+                    td_idx = p + 3
+                    target_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
                     
-                    # 버튼이 나타날 때까지 기다린 후 클릭
-                    page_btn = wait.until(EC.element_to_be_clickable((By.XPATH, page_xpath)))
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
-                    time.sleep(2)
+                    page_btn = wait.until(EC.presence_of_element_located((By.XPATH, target_xpath)))
                     
-                    # td 안의 a 태그가 있다면 그것을 클릭, 없으면 td 클릭
+                    # td 내부의 'a' 태그나 버튼에서 스크립트 추출하여 실행
                     try:
-                        inner_link = page_btn.find_element(By.TAG_NAME, "a")
-                        driver.execute_script("arguments[0].click();", inner_link)
+                        script = page_btn.find_element(By.TAG_NAME, "a").get_attribute("href")
+                        if "javascript:" in script:
+                            driver.execute_script(script.replace("javascript:", ""))
+                        else:
+                            driver.execute_script("arguments[0].click();", page_btn)
                     except:
                         driver.execute_script("arguments[0].click();", page_btn)
+
+                    print(f"   -> {p}페이지 이동 명령 전송. 갱신 대기 중...")
                     
-                    print(f"   -> {p}페이지 버튼 클릭 완료. 데이터 갱신 대기 중...")
-                    
-                    # --- [핵심] 데이터 갱신 검증 로직 ---
+                    # 2. 데이터 갱신 검증 (innerText 사용)
                     updated = False
-                    for _ in range(30): # 최대 30초 대기
+                    for _ in range(40):
                         time.sleep(1)
                         try:
-                            # 첫 번째 행의 ID 추출 (ID 위치가 td[2]라고 가정)
-                            current_first_id = driver.find_element(By.XPATH, '//*[@id="notamSheet-table"]/tbody/tr[1]/td[2]').text
+                            # innerText를 사용하여 숨겨진 텍스트도 강제로 가져옵니다.
+                            current_first_id = driver.find_element(By.XPATH, '//*[@id="notamSheet-table"]/tbody/tr[1]/td[2]').get_attribute("innerText").strip()
                             if current_first_id and current_first_id != last_first_id:
-                                print(f"   -> [확인] 데이터 갱신됨: {last_first_id} -> {current_first_id}")
+                                print(f"   -> [성공] 데이터 갱신 확인: {last_first_id} -> {current_first_id}")
                                 last_first_id = current_first_id
                                 updated = True
                                 break
                         except: pass
                     
                     if not updated:
-                        print(f"   ⚠️ {p}페이지 데이터 갱신 확인 실패. (스크린샷 저장)")
-                        driver.save_screenshot(f"debug_page_{p}.png")
-                    
-                    time.sleep(5) # 안정적인 엑셀 생성을 위한 추가 대기
+                        print(f"   ⚠️ 갱신 실패. 현재 첫 ID: {last_first_id}")
+                        # 강제로 10초 더 대기하고 진행 (마지막 수단)
+                        time.sleep(10)
                 except Exception as e:
-                    print(f"   -> 페이지 이동 실패 또는 종료: {e}")
+                    print(f"   -> 이동 에러: {e}")
                     break
             else:
-                # 1페이지 첫 번째 ID 미리 저장
+                # 1페이지 초기 ID 확보
+                time.sleep(5)
                 try:
-                    last_first_id = driver.find_element(By.XPATH, '//*[@id="notamSheet-table"]/tbody/tr[1]/td[2]').text
-                    print(f"   -> 1페이지 첫 ID: {last_first_id}")
-                except: pass
+                    last_first_id = driver.find_element(By.XPATH, '//*[@id="notamSheet-table"]/tbody/tr[1]/td[2]').get_attribute("innerText").strip()
+                    print(f"   -> 1페이지 기준 ID: {last_first_id}")
+                except: print("   ⚠️ 1페이지 ID 확보 실패")
 
-            # --- 엑셀 다운로드 클릭 ---
+            # 3. 엑셀 다운로드
             try:
                 excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
-                excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, excel_xpath)))
+                excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, excel_xpath)))
                 driver.execute_script("arguments[0].click();", excel_btn)
                 
-                # --- 파일 이름 즉시 변경 ---
+                # 파일 확보 및 이름 변경
                 renamed = False
                 for _ in range(60): 
                     time.sleep(1)
                     new_files = [f for f in os.listdir(download_dir) if not f.startswith('page_') and not f.endswith('.crdownload')]
                     if new_files:
-                        time.sleep(3)
+                        time.sleep(4)
                         old_path = os.path.join(download_dir, new_files[0])
                         new_filename = f"page_{p}_notam.xls"
                         os.rename(old_path, os.path.join(download_dir, new_filename))
-                        print(f"   -> [확보 성공] {new_filename} (크기: {os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
+                        print(f"   -> [확보] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
                         renamed = True
                         break
-                if not renamed: print(f"   ⚠️ {p}페이지 파일 다운로드 확인 실패")
             except Exception as e:
-                print(f"   ⚠️ {p}페이지 엑셀 작업 오류: {e}")
+                print(f"   ⚠️ 다운로드 오류: {e}")
 
-        # --- 병합 및 업로드 ---
+        # 4. 병합 및 업로드
         all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')]
-        print(f"📂 총 {len(all_files)}개 파일 병합 시작...")
+        print(f"📂 병합 대상 파일 수: {len(all_files)}")
         
         all_dfs = []
         for f in all_files:
             try:
                 df_temp = pd.read_excel(f, engine='xlrd')
-                print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행 확보")
                 all_dfs.append(df_temp)
+                print(f"   -> {os.path.basename(f)}: {len(df_temp)}개 행")
             except: continue
 
         if all_dfs:
             full_df = pd.concat(all_dfs, ignore_index=True)
             full_df.drop_duplicates(subset=['Notam#'], keep='first', inplace=True)
-            print(f"✅ 중복 제거 후 최종 데이터: {len(full_df)}건")
+            print(f"✅ 최종 중복 제거 결과: {len(full_df)}건")
 
             notam_list = []
             for _, row in full_df.iterrows():
@@ -164,9 +163,8 @@ def run_scraper():
                     "start_date": str(row.get('Start Date UTC', '')),
                     "end_date": str(row.get('End Date UTC', ''))
                 })
-
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [최종 완료] {len(notam_list)}건 '코숏' DB 업데이트 성공!")
+            print(f"🚀 [임무 완수] {len(notam_list)}건 업데이트 완료!")
 
     finally:
         driver.quit()
