@@ -18,6 +18,7 @@ def find_notam_id_in_source(source):
     match = re.search(r'[A-Z]\d{4}/\d{2}', source)
     return match.group(0) if match else None
 
+# 2. 좌표 추출 함수 (Doo GPX 지도 표시용)
 def extract_coords(full_text):
     try:
         match = re.search(r'(\d{4}[NS])(\d{5}[EW])', full_text)
@@ -59,38 +60,35 @@ def run_scraper():
     wait = WebDriverWait(driver, 60)
 
     try:
-        print(f"🌐 KOCA 345건 정밀 타격 시작 (XPath: td[p+1])... ({time.strftime('%H:%M:%S')})")
+        print(f"🌐 KOCA 345건 전수 수집 (td[5] 무조건 타격)... ({time.strftime('%H:%M:%S')})")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(50) 
 
         last_page_id = ""
 
+        # 최대 10페이지까지 반복 (갱신 안 될 때까지)
         for p in range(1, 11): 
-            print(f"📄 {p}페이지 작업 시도 중...")
+            print(f"📄 {p}페이지 작업 시작...")
             
             # 현재 페이지 ID 확보
             current_id = find_notam_id_in_source(driver.page_source)
             
             if p == 1:
                 last_page_id = current_id
-                print(f"   -> 1페이지 ID 확보: {last_page_id}")
+                print(f"   -> 1페이지 기준 ID 확보: {last_page_id}")
             else:
-                # --- [핵심 수정] td[p+1] 인덱스 및 마우스 클릭 적용 ---
+                # --- [핵심 수정] 무조건 td[5] 클릭 ---
                 try:
-                    # 개발자님이 확인하신 p+1 인덱스 적용
-                    td_idx = p + 1
-                    target_xpath = f"/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]"
+                    next_xpath = '//*[@id="notamSheet-table"]/tbody/tr[5]/td/div/table/tbody/tr/td[5]'
+                    next_btn = wait.until(EC.presence_of_element_located((By.XPATH, next_xpath)))
                     
-                    page_btn = wait.until(EC.presence_of_element_located((By.XPATH, target_xpath)))
-                    
-                    # 화면 중앙으로 이동
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
+                    # 화면 중앙으로 이동 후 안정화
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_btn)
                     time.sleep(3)
 
-                    # [마우스 클릭 방식] ActionChains 사용
-                    actions = ActionChains(driver)
-                    actions.move_to_element(page_btn).click().perform()
-                    print(f"   -> {p}페이지 마우스 클릭 완료 (XPath: td[{td_idx}])")
+                    # [마우스 클릭] ActionChains로 정밀 타격
+                    ActionChains(driver).move_to_element(next_btn).click().perform()
+                    print(f"   -> td[5] '다음' 클릭 완료. 페이지 교체 대기 중...")
                     
                     # 데이터 갱신 확인 (최대 60초)
                     updated = False
@@ -98,17 +96,17 @@ def run_scraper():
                         time.sleep(1)
                         new_id = find_notam_id_in_source(driver.page_source)
                         if new_id and new_id != last_page_id:
-                            print(f"   -> [확인] {p}페이지 데이터 갱신 성공: {last_page_id} -> {new_id}")
+                            print(f"   -> [성공] 데이터 갱신 확인: {last_page_id} -> {new_id}")
                             last_page_id = new_id
                             updated = True
                             break
                     
                     if not updated:
-                        print(f"   ⚠️ {p}페이지 갱신 미확인. (강제 중복 방지를 위해 skip)")
-                        continue
+                        print(f"   ⚠️ 갱신 미확인. (더 이상 페이지가 없거나 클릭 실패)")
+                        break # 데이터가 안 바뀌면 루프 종료
                         
                 except Exception as e:
-                    print(f"   -> {p}페이지 이동 실패(종료 예상): {e}")
+                    print(f"   -> 다음 페이지 버튼(td[5])을 찾을 수 없음: {e}")
                     break
 
             # --- 엑셀 다운로드 및 파일 이름 변경 ---
@@ -116,7 +114,7 @@ def run_scraper():
                 excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
                 excel_btn = wait.until(EC.element_to_be_clickable((By.XPATH, excel_xpath)))
                 driver.execute_script("arguments[0].click();", excel_btn)
-                print(f"   -> {p}페이지 다운로드 요청")
+                print(f"   -> {p}페이지 엑셀 다운로드 요청")
                 
                 renamed = False
                 for _ in range(60): 
@@ -127,28 +125,31 @@ def run_scraper():
                         old_path = os.path.join(download_dir, files[0])
                         new_filename = f"page_{p}_notam.xls"
                         os.rename(old_path, os.path.join(download_dir, new_filename))
-                        print(f"   -> [확보] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
+                        print(f"   -> [확보성공] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
                         renamed = True
                         break
+                if not renamed:
+                    print(f"   ⚠️ {p}페이지 파일 확보 실패")
             except Exception as e:
-                print(f"   ⚠️ 다운로드 오류: {e}")
+                print(f"   ⚠️ 다운로드 오류 발생: {e}")
 
         # --- 데이터 병합 및 DB 동기화 ---
         all_files = sorted([os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')])
-        print(f"📂 병합 리스트: {[os.path.basename(f) for f in all_files]}")
+        print(f"📂 병합 파일 목록: {[os.path.basename(f) for f in all_files]}")
         
         all_dfs = []
         for f in all_files:
             try:
                 df_temp = pd.read_excel(f, engine='xlrd')
-                print(f"   -> {os.path.basename(f)}: {len(df_temp)}행 읽기 성공")
+                print(f"   -> {os.path.basename(f)}: {len(df_temp)}행 읽기 완료")
                 all_dfs.append(df_temp)
-            except: continue
+            except Exception as e:
+                print(f"   ⚠️ {f} 읽기 오류: {e}")
 
         if all_dfs:
             full_df = pd.concat(all_dfs, ignore_index=True)
             full_df.drop_duplicates(subset=['Notam#'], keep='first', inplace=True)
-            print(f"✅ 최종 통합 완료: 총 {len(full_df)}건")
+            print(f"✅ 최종 데이터 통합: 총 {len(full_df)}건")
 
             notam_list = []
             for _, row in full_df.iterrows():
@@ -162,8 +163,9 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
 
-            # DB 청소(Truncate) 후 최신 데이터 업로드
-            print("🧹 DB 초기화 중 (이전 데이터 삭제)...")
+            # DB 초기화(Truncate) 후 최신 데이터 업로드
+            print("🧹 DB 초기화 중 (이전 노탐 삭제)...")
+            # notam_id가 "0"이 아닌 모든 행 삭제 (전체 삭제 효과)
             supabase.table("notams").delete().neq("notam_id", "0").execute()
             
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
