@@ -57,44 +57,55 @@ def run_scraper():
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(40) 
 
-        # --- [핵심] iframe 찾기 및 전환 ---
+        # --- [수정] 프레임 찾기 및 인덱스 저장 ---
+        target_frame_index = None
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        for i, frame in enumerate(iframes):
-            driver.switch_to.default_content()
-            driver.switch_to.frame(frame)
-            if len(driver.find_elements(By.ID, "notamSheet-table")) > 0:
-                print(f"✅ 데이터 프레임 발견 및 전환 성공 (Index: {i})")
-                break
+        print(f"💡 발견된 총 프레임 수: {len(iframes)}")
+
+        for idx, frame in enumerate(iframes):
+            try:
+                driver.switch_to.default_content()
+                driver.switch_to.frame(frame)
+                # 테이블이 있는지 확인
+                if len(driver.find_elements(By.ID, "notamSheet-table")) > 0:
+                    print(f"✅ 데이터 프레임 발견 (Index: {idx})")
+                    target_frame_index = idx
+                    break
+            except:
+                continue
         
         last_first_id = ""
 
         for p in range(1, 11): 
             print(f"📄 {p}페이지 작업 시작...")
             
-            # 현재 프레임 안에서 ID 추출 시도
+            # 1. 프레임으로 전환 (페이지 이동 및 ID 확인용)
+            if target_frame_index is not None:
+                driver.switch_to.default_content()
+                driver.switch_to.frame(iframes[target_frame_index])
+            else:
+                print("⚠️ 프레임을 찾지 못해 메인 페이지에서 시도합니다.")
+
+            # 현재 ID 추출 (textContent/innerText 혼합)
             try:
                 current_id_el = driver.find_element(By.XPATH, '//*[@id="notamSheet-table"]/tbody/tr[1]/td[2]')
-                current_id = current_id_el.get_attribute("textContent").strip()
-                if not current_id: # 텍스트가 안 잡히면 JS로 시도
-                    current_id = driver.execute_script("return arguments[0].innerText;", current_id_el).strip()
+                current_id = driver.execute_script("return arguments[0].innerText;", current_id_el).strip()
             except:
                 current_id = ""
 
             if p == 1:
                 last_first_id = current_id
-                print(f"   -> 1페이지 기준 ID: {last_first_id}")
+                print(f"   -> 1페이지 기준 ID: {last_first_id if last_first_id else '읽기 실패'}")
             else:
-                # 페이지 이동 로직
+                # 페이지 이동 (프레임 내부)
                 try:
                     td_idx = p + 3
                     page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
                     
-                    # 프레임 안에서 버튼 찾기
                     page_btn = wait.until(EC.presence_of_element_located((By.XPATH, page_xpath)))
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
                     time.sleep(1)
                     driver.execute_script("arguments[0].click();", page_btn)
-                    print(f"   -> {p}페이지 클릭 완료. 갱신 대기...")
                     
                     # 데이터 갱신 확인
                     updated = False
@@ -107,14 +118,13 @@ def run_scraper():
                             updated = True
                             break
                     
-                    if not updated:
-                        print(f"   ⚠️ 데이터 갱신 확인 실패. (강제 진행)")
+                    if not updated: print(f"   ⚠️ 갱신 미확인 (현재 ID: {new_id if 'new_id' in locals() else 'N/A'})")
                     time.sleep(5)
                 except Exception as e:
                     print(f"   -> 이동 에러: {e}")
                     break
 
-            # 엑셀 다운로드 (부모 페이지에 버튼이 있을 경우를 대비해 필요시 전환)
+            # 2. 엑셀 다운로드 (메인 컨텐츠로 전환)
             driver.switch_to.default_content()
             try:
                 excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
@@ -125,23 +135,20 @@ def run_scraper():
                 renamed = False
                 for _ in range(60): 
                     time.sleep(1)
-                    new_files = [f for f in os.listdir(download_dir) if not f.startswith('page_') and not f.endswith('.crdownload')]
-                    if new_files:
+                    files = [f for f in os.listdir(download_dir) if not f.startswith('page_') and not f.endswith('.crdownload')]
+                    if files:
                         time.sleep(4)
-                        old_path = os.path.join(download_dir, new_files[0])
+                        old_path = os.path.join(download_dir, files[0])
                         new_filename = f"page_{p}_notam.xls"
                         os.rename(old_path, os.path.join(download_dir, new_filename))
                         print(f"   -> [확보성공] {new_filename} ({os.path.getsize(os.path.join(download_dir, new_filename))} bytes)")
                         renamed = True
                         break
+                if not renamed: print(f"   ⚠️ 다운로드 확인 실패")
             except Exception as e:
                 print(f"   ⚠️ 다운로드 오류: {e}")
 
-            # 다음 페이지를 누르기 위해 다시 프레임으로 복귀
-            driver.switch_to.frame(iframes[i]) 
-
         # --- 데이터 병합 및 업로드 ---
-        driver.switch_to.default_content() # 최종 업로드 전 메인으로 복귀
         all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')]
         print(f"📂 병합 파일 수: {len(all_files)}")
         
@@ -170,7 +177,7 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [임무 완수] {len(notam_list)}건 '코숏' DB 업데이트 성공!")
+            print(f"🚀 [완료] {len(notam_list)}건 '코숏' DB 업데이트 성공!")
 
     finally:
         driver.quit()
