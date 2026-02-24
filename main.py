@@ -26,18 +26,15 @@ def extract_coords(full_text):
     return 37.5665, 126.9780
 
 def run_scraper():
-    # 1. Supabase 설정
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     supabase: Client = create_client(url, key)
 
-    # 2. 다운로드 디렉토리 정리
     download_dir = os.path.join(os.getcwd(), "downloads")
     if os.path.exists(download_dir):
         shutil.rmtree(download_dir)
     os.makedirs(download_dir)
 
-    # 3. 브라우저 옵션 설정 (최적화 버전)
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -55,79 +52,70 @@ def run_scraper():
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.set_page_load_timeout(180)
-    driver.set_script_timeout(180)
     wait = WebDriverWait(driver, 40)
 
     try:
-        print("🌐 KOCA 페이지 접속 중...")
+        print("🌐 KOCA 접속 및 초기화...")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         time.sleep(30) 
 
-        # 4. 무한 루프 탐색 (페이지가 없을 때까지)
-        print("📊 멀티 페이지 데이터 수집 시작...")
+        print("📊 멀티 페이지 수집 시작 (XPath 정밀 인덱싱)...")
         
-        for p in range(1, 21): # 최대 20페이지까지 안전장치
-            print(f"📄 {p}페이지 시도 중...")
+        # p=1(100건), p=2(200건), p=3(300건), p=4(346건)
+        # 2페이지가 td[5]라면, p페이지의 XPath는 td[p+3]이 됩니다.
+        for p in range(1, 11): 
+            print(f"📄 {p}페이지 데이터 수집 중...")
             
             if p > 1:
                 try:
-                    # 'p'라는 텍스트를 가진 페이지 번호 클릭
-                    page_btn = driver.find_element(By.XPATH, f"//a[text()='{p}']")
+                    # 주신 XPath 규칙 적용: 2페이지=td[5], 3페이지=td[6]...
+                    td_idx = p + 3 
+                    page_xpath = f'//*[@id="notamSheet-table"]/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
+                    
+                    page_btn = wait.until(EC.element_to_be_clickable((By.XPATH, page_xpath)))
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_btn)
-                    time.sleep(2)
+                    time.sleep(1)
                     driver.execute_script("arguments[0].click();", page_btn)
-                    print(f"   -> {p}페이지 이동 성공")
-                    time.sleep(12) # 테이블 로딩 대기
-                except:
-                    print(f"   -> {p}페이지 버튼을 찾을 수 없습니다. 수집을 종료합니다.")
+                    print(f"   -> {p}페이지 이동 성공 (td[{td_idx}])")
+                    time.sleep(15) # KOCA 서버 응답 대기
+                except Exception as e:
+                    print(f"   -> {p}페이지 버튼을 더 이상 찾을 수 없습니다. (종료)")
                     break
 
-            # 5. 엑셀 다운로드 (정밀 XPath)
+            # 엑셀 다운로드 (성공했던 XPath)
             try:
-                target_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
-                excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, target_xpath)))
+                excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
+                excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, excel_xpath)))
                 driver.execute_script("arguments[0].click();", excel_btn)
-                print(f"   -> {p}페이지 엑셀 다운로드 클릭 완료")
-                time.sleep(15) # 파일 다운로드 시간 확보
+                print(f"   -> {p}페이지 엑셀 다운로드 요청 완료")
+                time.sleep(15) 
             except Exception as e:
-                print(f"   -> {p}페이지 다운로드 중 오류 발생: {e}")
-                continue
+                print(f"   -> {p}페이지 다운로드 중 에러: {e}")
 
-        print("⏳ 모든 파일 병합 준비 중...")
-        time.sleep(10)
-
-        # 6. 다운로드된 모든 파일 병합
+        # 모든 파일 병합
         files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.endswith(('.xls', '.xlsx'))]
         if not files:
             print("🚨 수집된 파일이 없습니다.")
             return
 
-        print(f"📂 총 {len(files)}개 파일 병합 및 중복 제거 시작...")
+        print(f"📂 {len(files)}개 파일 통합 및 중복 제거...")
         all_dfs = []
         for f in files:
             try:
                 all_dfs.append(pd.read_excel(f, engine='xlrd'))
             except: continue
 
-        if not all_dfs: return
-        
         full_df = pd.concat(all_dfs, ignore_index=True)
-        # Notam# 컬럼 기준으로 중복 제거
         full_df.drop_duplicates(subset=['Notam#'], keep='first', inplace=True)
         print(f"✅ 최종 유효 데이터 {len(full_df)}건 확보")
 
-        # 7. Supabase 업로드 데이터 생성
         notam_list = []
         for _, row in full_df.iterrows():
             notam_id = str(row.get('Notam#', ''))
             full_text = str(row.get('Full Text', ''))
             lat, lng = extract_coords(full_text)
-            
             notam_list.append({
-                "notam_id": notam_id,
-                "content": full_text,
-                "lat": lat,
-                "lng": lng,
+                "notam_id": notam_id, "content": full_text, "lat": lat, "lng": lng,
                 "series": notam_id[0] if notam_id else "U",
                 "start_date": str(row.get('Start Date UTC', '')),
                 "end_date": str(row.get('End Date UTC', ''))
@@ -135,11 +123,11 @@ def run_scraper():
 
         if notam_list:
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [완료] 총 {len(notam_list)}개의 노탐 데이터가 업데이트되었습니다.")
+            print(f"🚀 [성공] 총 {len(notam_list)}개의 노탐이 Supabase에 업데이트되었습니다!")
 
     except Exception as e:
-        print(f"🚨 에러 발생: {e}")
-        driver.save_screenshot("final_multi_debug.png")
+        print(f"🚨 치명적 에러: {e}")
+        driver.save_screenshot("pagination_error.png")
     finally:
         driver.quit()
 
