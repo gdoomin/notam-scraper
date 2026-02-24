@@ -2,6 +2,7 @@ import os
 import time
 import re
 import shutil
+import glob
 import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -25,6 +26,44 @@ def extract_coords(full_text):
     except: pass
     return 37.5665, 126.9780
 
+def wait_for_new_download(download_dir, existing_files, timeout=90):
+    """기존 파일 목록과 비교해서 새 파일이 완전히 다운로드될 때까지 대기"""
+    for _ in range(timeout):
+        time.sleep(1)
+        current_files = set(os.listdir(download_dir))
+        new_files = [f for f in current_files - existing_files 
+                     if not f.endswith('.crdownload') and not f.endswith('.tmp')]
+        if new_files:
+            time.sleep(2)  # 파일 쓰기 완료 대기
+            return new_files[0]
+    return None
+
+def click_page(driver, wait, page_num):
+    """페이지 버튼 클릭 - 여러 방식 시도"""
+    try:
+        # 방법 1: 텍스트로 페이지 버튼 찾기
+        page_btns = driver.find_elements(By.XPATH, 
+            f"//table//td[normalize-space(text())='{page_num}']")
+        for btn in page_btns:
+            if btn.is_displayed():
+                driver.execute_script("arguments[0].click();", btn)
+                print(f"   -> {page_num}페이지 버튼 클릭 (텍스트 방식)")
+                return True
+    except: pass
+    
+    try:
+        # 방법 2: a 태그로 찾기
+        page_links = driver.find_elements(By.XPATH,
+            f"//a[normalize-space(text())='{page_num}']")
+        for link in page_links:
+            if link.is_displayed():
+                driver.execute_script("arguments[0].click();", link)
+                print(f"   -> {page_num}페이지 링크 클릭")
+                return True
+    except: pass
+    
+    return False
+
 def run_scraper():
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
@@ -40,99 +79,127 @@ def run_scraper():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
     
     prefs = {
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
         "safebrowsing.enabled": True,
-        "profile.default_content_setting_values.multiple_automatic_downloads": 1
     }
     options.add_experimental_option("prefs", prefs)
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    
-    # --- [핵심] CDP 명령어로 헤드리스 다운로드 제한 강제 해제 ---
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {
         'behavior': 'allow',
         'downloadPath': download_dir
     })
-    
     driver.set_page_load_timeout(180)
-    wait = WebDriverWait(driver, 45)
+    wait = WebDriverWait(driver, 60)
 
     try:
-        print(f"🌐 KOCA 접속 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🌐 KOCA 접속: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
-        time.sleep(35) 
-
-        print("📊 전체 데이터(346건+) 수집 로직 가동...")
         
-        for p in range(1, 11): 
-            print(f"📄 {p}페이지 작업 시도 중...")
+        print("⏳ 초기 로딩 대기 (40초)...")
+        time.sleep(40)
+
+        for p in range(1, 5):  # 1~4페이지
+            print(f"\n{'='*40}")
+            print(f"📄 {p}페이지 처리 시작")
             
+            # 1페이지 제외하고 페이지 이동
             if p > 1:
-                try:
-                    td_idx = p + 3 
-                    page_xpath = f'/html/body/div[2]/div[3]/div[2]/div/div/div[2]/div[3]/div[2]/div/div/div/div/div/table/tbody/tr[5]/td/div/table/tbody/tr/td[{td_idx}]'
-                    page_btn = wait.until(EC.element_to_be_clickable((By.XPATH, page_xpath)))
-                    driver.execute_script("arguments[0].click();", page_btn)
-                    print(f"   -> {p}페이지 이동 완료")
-                    time.sleep(20) # 데이터 로딩 대기
-                except:
-                    print(f"   -> 더 이상의 페이지 없음")
+                success = click_page(driver, wait, p)
+                if not success:
+                    print(f"   ⚠️ {p}페이지 버튼을 찾지 못함. 페이지네이션 구조 확인 필요")
+                    # 디버깅: 현재 페이지네이션 영역 HTML 출력
+                    try:
+                        pagination = driver.find_element(By.XPATH, "//table[.//td[@class='paginate_button']]")
+                        print(f"   [DEBUG] 페이지네이션 HTML:\n{pagination.get_attribute('outerHTML')[:500]}")
+                    except:
+                        print("   [DEBUG] 페이지네이션 요소를 찾을 수 없음")
                     break
+                
+                print(f"   ⏳ 페이지 로딩 대기...")
+                time.sleep(25)
 
-            # 엑셀 다운로드 클릭 (버튼을 새로 찾아서 타격)
+            # 현재 다운로드 폴더 상태 스냅샷
+            existing_files = set(os.listdir(download_dir))
+            
+            # 엑셀 다운로드 버튼 클릭
             try:
-                excel_xpath = '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]'
-                excel_btn = wait.until(EC.presence_of_element_located((By.XPATH, excel_xpath)))
+                # 엑셀 버튼 - 여러 XPath/선택자 시도
+                excel_btn = None
+                selectors = [
+                    '//*[@id="realContents"]/div[3]/div[1]/div/div/a[3]',
+                    '//a[contains(@onclick, "excel") or contains(@href, "excel")]',
+                    '//a[contains(text(), "엑셀") or contains(text(), "Excel") or contains(text(), "XLS")]',
+                    '//img[contains(@src, "excel") or contains(@alt, "excel")]/parent::a',
+                ]
+                
+                for sel in selectors:
+                    try:
+                        el = driver.find_element(By.XPATH, sel)
+                        if el.is_displayed():
+                            excel_btn = el
+                            print(f"   -> 엑셀 버튼 발견: {sel[:50]}")
+                            break
+                    except: continue
+                
+                if not excel_btn:
+                    print(f"   ⚠️ {p}페이지 엑셀 버튼 없음")
+                    # 디버깅용 스크린샷
+                    driver.save_screenshot(f"debug_page_{p}.png")
+                    print(f"   [DEBUG] 스크린샷 저장: debug_page_{p}.png")
+                    continue
+                
                 driver.execute_script("arguments[0].click();", excel_btn)
-                print(f"   -> {p}페이지 엑셀 다운로드 요청")
+                print(f"   -> 엑셀 다운로드 클릭")
                 
-                # 파일 이름 변경 로직
-                renamed = False
-                for _ in range(60): 
-                    time.sleep(1)
-                    # page_로 시작하지 않는 모든 파일 검색 (notam.xls, notam(1).xls 등 대응)
-                    new_files = [f for f in os.listdir(download_dir) 
-                                 if not f.startswith('page_') and not f.endswith('.crdownload')]
-                    
-                    if new_files:
-                        time.sleep(3) # 안정적인 저장을 위해 잠시 대기
-                        old_path = os.path.join(download_dir, new_files[0])
-                        new_filename = f"page_{p}_notam.xls"
-                        new_path = os.path.join(download_dir, new_filename)
-                        os.rename(old_path, new_path)
-                        print(f"   -> [확보 성공] {new_filename}")
-                        renamed = True
-                        break
-                
-                if not renamed:
-                    print(f"   ⚠️ {p}페이지 다운로드 감지 실패 (브라우저가 막았을 수 있음)")
-                    
             except Exception as e:
-                print(f"   ⚠️ {p}페이지 버튼 처리 중 에러: {e}")
+                print(f"   ⚠️ 엑셀 버튼 클릭 실패: {e}")
+                continue
 
-        # 모든 파일 병합
-        all_files = [os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')]
-        print(f"📂 총 {len(all_files)}개 파일 병합 시작...")
-        
+            # 새 파일 대기
+            print(f"   ⏳ 다운로드 완료 대기...")
+            new_file = wait_for_new_download(download_dir, existing_files, timeout=90)
+            
+            if new_file:
+                old_path = os.path.join(download_dir, new_file)
+                new_filename = f"page_{p}_notam.xls"
+                new_path = os.path.join(download_dir, new_filename)
+                # 기존 동명 파일 있으면 삭제
+                if os.path.exists(new_path):
+                    os.remove(new_path)
+                os.rename(old_path, new_path)
+                file_size = os.path.getsize(new_path)
+                print(f"   ✅ [{p}페이지] {new_filename} 저장 완료 ({file_size:,} bytes)")
+            else:
+                print(f"   ⚠️ [{p}페이지] 다운로드 감지 실패")
+                driver.save_screenshot(f"debug_download_fail_p{p}.png")
+
+        # 파일 병합
+        all_files = sorted(glob.glob(os.path.join(download_dir, 'page_*.xls')))
+        print(f"\n{'='*40}")
+        print(f"📂 총 {len(all_files)}개 파일 병합 중...")
+
         if not all_files:
-            print("🚨 파일을 하나도 확보하지 못했습니다.")
+            print("🚨 파일 없음. debug_*.png 스크린샷 확인하세요.")
             return
 
         all_dfs = []
         for f in all_files:
             try:
-                all_dfs.append(pd.read_excel(f, engine='xlrd'))
-                print(f"   -> {os.path.basename(f)} 합계에 추가")
-            except: continue
+                df = pd.read_excel(f, engine='xlrd')
+                print(f"   -> {os.path.basename(f)}: {len(df)}건")
+                all_dfs.append(df)
+            except Exception as e:
+                print(f"   ⚠️ {f} 읽기 실패: {e}")
 
         full_df = pd.concat(all_dfs, ignore_index=True)
         full_df.drop_duplicates(subset=['Notam#'], keep='first', inplace=True)
-        print(f"✅ 중복 제거 후 최종 데이터: {len(full_df)}건")
+        print(f"✅ 중복 제거 후 최종: {len(full_df)}건")
 
         notam_list = []
         for _, row in full_df.iterrows():
@@ -148,10 +215,13 @@ def run_scraper():
 
         if notam_list:
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [최종] {len(notam_list)}건 '코숏' DB 업데이트 완료!")
+            print(f"🚀 [완료] {len(notam_list)}건 DB 업서트!")
 
     except Exception as e:
+        import traceback
         print(f"🚨 에러: {e}")
+        traceback.print_exc()
+        driver.save_screenshot("debug_error.png")
     finally:
         driver.quit()
 
