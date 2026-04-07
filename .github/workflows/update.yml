@@ -4,11 +4,19 @@ on:
     - cron: '0 21,22,23,0,1,2,3,4,5,6,7,8,9,10,11,12 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
 
       - name: Python Setup
         uses: actions/setup-python@v5
@@ -31,9 +39,92 @@ jobs:
           name: notam-latest
           path: notam-latest.json
 
+      - name: Prepare GitHub Pages payload
+        if: success()
+        run: |
+          mkdir -p pages
+          cp notam-latest.json pages/notam-latest.json
+          touch pages/.nojekyll
+          cat > pages/index.html <<'EOF'
+          <!doctype html>
+          <html lang="ko">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>NOTAM Snapshot</title>
+            <style>
+              body {
+                margin: 0;
+                padding: 40px 24px;
+                background: #0b1220;
+                color: #e5edf7;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+              }
+              .card {
+                max-width: 760px;
+                margin: 0 auto;
+                padding: 24px;
+                border-radius: 18px;
+                background: rgba(15, 23, 42, 0.92);
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+              }
+              h1 {
+                margin: 0 0 12px;
+                font-size: 28px;
+              }
+              p {
+                margin: 8px 0;
+                line-height: 1.6;
+                color: #b8c6d8;
+              }
+              a {
+                color: #7dd3fc;
+                font-weight: 700;
+              }
+              code {
+                display: inline-block;
+                margin-top: 8px;
+                padding: 3px 8px;
+                border-radius: 999px;
+                background: rgba(30, 41, 59, 0.9);
+                color: #f8fafc;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+  <h1>Latest NOTAM Snapshot</h1>
+  <p>This page publishes the latest NOTAM JSON snapshot for DOO GPX.</p>
+  <p><a href="./notam-latest.json">Open notam-latest.json</a></p>
+  <code>Array&lt;{ lat, lng, content, notam_id }&gt;</code>
+</div>
+          </body>
+          </html>
+          EOF
+
+      - name: Upload GitHub Pages artifact
+        if: success()
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages
+
       - name: Upload Screenshot on Failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: error-screenshot
           path: error_screenshot.png
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
