@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import re
@@ -170,6 +171,25 @@ def run_scraper():
             
             supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
             print(f"🚀 [최종 성공] {len(notam_list)}건의 데이터를 '코숏' DB에 동기화 완료!")
+                        # 최신 NOTAM snapshot JSON 저장 (DOO GPX 호환용)
+            try:
+                json_output = [
+                    {
+                        "lat": item.get("lat"),
+                        "lng": item.get("lng"),
+                        "content": item.get("content", ""),
+                        "notam_id": item.get("notam_id", "")
+                    }
+                    for item in notam_list
+                ]
+
+                with open("notam-latest.json", "w", encoding="utf-8") as f:
+                    json.dump(json_output, f, ensure_ascii=False, indent=2)
+
+                print(f"💾 JSON 저장 완료: notam-latest.json ({len(json_output)}건)")
+            except Exception as e:
+                print(f"⚠️ JSON 저장 실패: {e}")
+
 
     finally:
         driver.quit()
