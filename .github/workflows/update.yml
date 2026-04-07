@@ -23,6 +23,14 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+      - name: Upload NOTAM JSON
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notam-latest
+          path: notam-latest.json
+
       - name: Upload Screenshot on Failure
         if: failure()
         uses: actions/upload-artifact@v4
