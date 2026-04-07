@@ -94,11 +94,11 @@ jobs:
           </head>
           <body>
             <div class="card">
-  <h1>Latest NOTAM Snapshot</h1>
-  <p>This page publishes the latest NOTAM JSON snapshot for DOO GPX.</p>
-  <p><a href="./notam-latest.json">Open notam-latest.json</a></p>
-  <code>Array&lt;{ lat, lng, content, notam_id }&gt;</code>
-</div>
+              <h1>Latest NOTAM Snapshot</h1>
+              <p>This page publishes the latest NOTAM JSON snapshot for DOO GPX.</p>
+              <p><a href="./notam-latest.json">Open notam-latest.json</a></p>
+              <code>Array&lt;{ lat, lng, content, notam_id }&gt;</code>
+            </div>
           </body>
           </html>
           EOF
