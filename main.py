@@ -1,8 +1,8 @@
-import json
 import os
 import time
 import re
 import shutil
+import json
 import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
