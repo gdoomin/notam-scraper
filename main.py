@@ -12,7 +12,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from supabase import create_client, Client
 
 # 1. 노탐 ID 추출용 정규표현식
 def find_notam_id_in_source(source):
@@ -34,10 +33,6 @@ def extract_coords(full_text):
     return 37.5665, 126.9780
 
 def run_scraper():
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    supabase: Client = create_client(url, key)
-
     download_dir = os.path.join(os.getcwd(), "downloads")
     if os.path.exists(download_dir):
         shutil.rmtree(download_dir)
@@ -134,7 +129,7 @@ def run_scraper():
             except Exception as e:
                 print(f"   ⚠️ 다운로드 오류 발생: {e}")
 
-        # --- 데이터 병합 및 DB 동기화 ---
+        # --- 데이터 병합 ---
         all_files = sorted([os.path.join(download_dir, f) for f in os.listdir(download_dir) if f.startswith('page_')])
         print(f"📂 병합 파일 목록: {[os.path.basename(f) for f in all_files]}")
         
@@ -164,14 +159,7 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
 
-            # DB 초기화(Truncate) 후 최신 데이터 업로드
-            print("🧹 DB 초기화 중 (이전 노탐 삭제)...")
-            # notam_id가 "0"이 아닌 모든 행 삭제 (전체 삭제 효과)
-            supabase.table("notams").delete().neq("notam_id", "0").execute()
-            
-            supabase.table("notams").upsert(notam_list, on_conflict="notam_id").execute()
-            print(f"🚀 [최종 성공] {len(notam_list)}건의 데이터를 '코숏' DB에 동기화 완료!")
-                        # 최신 NOTAM snapshot JSON 저장 (DOO GPX 호환용)
+            # 최신 NOTAM snapshot JSON 저장 (DOO GPX 호환용)
             try:
                 json_output = [
                     {
