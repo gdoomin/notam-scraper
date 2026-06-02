@@ -7,11 +7,16 @@ on:
 permissions:
   contents: read
 
+# Node.js 24 환경을 강제로 적용하여 경고 및 미래의 차단 문제를 방지합니다.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      # 기존 @v3에서 최신 노드 버전을 지원하는 @v4로 고쳤습니다.
+      - uses: actions/checkout@v4
 
       - name: Python Setup
         uses: actions/setup-python@v5
