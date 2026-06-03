@@ -41,7 +41,7 @@ def run_scraper():
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-dev-shm-usage")  # 리소스 부족으로 인한 크래시 방지
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
@@ -52,13 +52,22 @@ def run_scraper():
     options.add_experimental_option("prefs", prefs)
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    
+    # [추가] 브라우저 자체의 타임아웃을 60초로 제한 (120초 동안 멍때리는 것 방지)
+    driver.set_page_load_timeout(60)
+    driver.set_script_timeout(60)
+    
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': download_dir})
     wait = WebDriverWait(driver, 60)
 
     try:
         print(f"🌐 KOCA 345건 전수 수집 (td[5] 무조건 타격)... ({time.strftime('%H:%M:%S')})")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
-        time.sleep(50) 
+        
+        # [수정] 무조건 50초 쉬는 대신, 테이블 요소가 렌더링될 때까지만 대기 (맥시멈 60초)
+        print("⏳ 테이블 로딩 대기 중...")
+        wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="notamSheet-table"]')))
+        time.sleep(5)  # 내부 JS 데이터가 완전히 안착할 수 있도록 약간의 여유만 제공
 
         last_page_id = ""
 
@@ -76,11 +85,11 @@ def run_scraper():
                 # --- [핵심 수정] 무조건 td[5] 클릭 ---
                 try:
                     next_xpath = '//*[@id="notamSheet-table"]/tbody/tr[5]/td/div/table/tbody/tr/td[5]'
-                    next_btn = wait.until(EC.presence_of_element_located((By.XPATH, next_xpath)))
+                    next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, next_xpath)))
                     
                     # 화면 중앙으로 이동 후 안정화
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_btn)
-                    time.sleep(3)
+                    time.sleep(2)
 
                     # [마우스 클릭] ActionChains로 정밀 타격
                     ActionChains(driver).move_to_element(next_btn).click().perform()
@@ -115,9 +124,10 @@ def run_scraper():
                 renamed = False
                 for _ in range(60): 
                     time.sleep(1)
-                    files = [f for f in os.listdir(download_dir) if not f.startswith('page_') and not f.endswith('.crdownload')]
+                    # 확장자가 .xls 또는 .xlsx인 진짜 다운로드 완료된 파일만 필터링
+                    files = [f for f in os.listdir(download_dir) if (f.endswith('.xls') or f.endswith('.xlsx')) and not f.startswith('page_')]
                     if files:
-                        time.sleep(5) # 파일 저장 완료 대기
+                        time.sleep(2) # 파일 스트림이 완전히 닫힐 때까지 아주 잠깐 대기
                         old_path = os.path.join(download_dir, files[0])
                         new_filename = f"page_{p}_notam.xls"
                         os.rename(old_path, os.path.join(download_dir, new_filename))
@@ -177,7 +187,6 @@ def run_scraper():
                 print(f"💾 JSON 저장 완료: notam-latest.json ({len(json_output)}건)")
             except Exception as e:
                 print(f"⚠️ JSON 저장 실패: {e}")
-
 
     finally:
         driver.quit()
