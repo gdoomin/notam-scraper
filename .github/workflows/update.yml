@@ -1,4 +1,5 @@
 name: NOTAM_AUTO_UPDATE
+
 on:
   schedule:
     - cron: '0 * * * *'
@@ -7,16 +8,16 @@ on:
 permissions:
   contents: read
 
-# Node.js 24 환경을 강제로 적용하여 경고 및 미래의 차단 문제를 방지합니다.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      # 기존 @v3에서 최신 노드 버전을 지원하는 @v4로 고쳤습니다.
-      - uses: actions/checkout@v4
+      - name: Checkout source repo
+        uses: actions/checkout@v4
 
       - name: Python Setup
         uses: actions/setup-python@v5
@@ -24,7 +25,9 @@ jobs:
           python-version: '3.9'
 
       - name: Install Deps
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run Script
         run: python main.py
@@ -32,26 +35,66 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
+      - name: Validate NOTAM JSON
+        run: |
+          python - << 'EOF'
+          import json
+          import os
+
+          path = "notam-latest.json"
+
+          if not os.path.exists(path):
+              raise Exception("notam-latest.json was not created")
+
+          with open(path, "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          if not isinstance(data, list):
+              raise Exception("notam-latest.json is not a list")
+
+          if len(data) < 100:
+              raise Exception(f"Too few NOTAM items: {len(data)}")
+
+          required_keys = {"lat", "lng", "content", "notam_id"}
+
+          for i, item in enumerate(data[:10]):
+              if not isinstance(item, dict):
+                  raise Exception(f"Item {i} is not an object")
+
+              missing = required_keys - set(item.keys())
+              if missing:
+                  raise Exception(f"Item {i} missing keys: {missing}")
+
+          print(f"JSON validation passed: {len(data)} items")
+          EOF
+
       - name: Upload NOTAM JSON
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: notam-latest
           path: notam-latest.json
 
       - name: Publish NOTAM JSON to public repo
-        if: success()
         env:
           TARGET_REPO: gdoomin/notam-json
           TARGET_BRANCH: main
           TARGET_TOKEN: ${{ secrets.NOTAM_JSON_REPO_PAT }}
         run: |
           set -e
+
+          if [ -z "${TARGET_TOKEN}" ]; then
+            echo "TARGET_TOKEN is empty. Check NOTAM_JSON_REPO_PAT secret."
+            exit 1
+          fi
+
           rm -rf publish-repo
+
           git clone --depth 1 "https://x-access-token:${TARGET_TOKEN}@github.com/${TARGET_REPO}.git" publish-repo
+
           cp notam-latest.json publish-repo/notam-latest.json
 
           cd publish-repo
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -70,3 +113,4 @@ jobs:
         with:
           name: error-screenshot
           path: error_screenshot.png
+          if-no-files-found: ignore
