@@ -39,11 +39,16 @@ def run_scraper():
     os.makedirs(download_dir)
 
     options = Options()
-    options.add_argument("--headless")
+    # 💡 [최적화 핵심] 이미지나 무거운 외부 스크립트 로딩을 기다리지 않고 DOM만 완성되면 즉시 다음 단계 진행
+    options.page_load_strategy = 'eager'
+    
+    # 💡 [최적화 핵심] 깃허브 가상환경(리눅스 크롬 148 이상 등)에서 성능이 대폭 개선된 최신 헤드리스 모드 적용
+    options.add_argument("--headless=new")
+    
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")  # 리소스 부족으로 인한 크래시 방지
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome=120.0.0.0 Safari/537.36")
     
     prefs = {
         "download.default_directory": download_dir,
@@ -178,6 +183,7 @@ def run_scraper():
                         "content": item.get("content", ""),
                         "notam_id": item.get("notam_id", "")
                     }
+                    # 변경 없이 유지
                     for item in notam_list
                 ]
 
