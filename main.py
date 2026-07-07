@@ -40,8 +40,8 @@ def run_scraper():
 
     options = Options()
     
-    # 💡 [렌더러 타임아웃 해결 핵심] 무조건 none 전략을 사용하여 브라우저가 무한 대기에 빠지는 것을 원천 차단
-    options.page_load_strategy = 'none' 
+    # 💡 [수정] none 전략이 브라우저를 먹통으로 만들어 기본값(normal)으로 복구합니다.
+    options.page_load_strategy = 'normal' 
     
     # 깃허브 가상환경(리눅스) 크래시 방지 및 최신 헤드리스 모드 옵션
     options.add_argument("--headless=new")
@@ -49,10 +49,10 @@ def run_scraper():
     options.add_argument("--disable-dev-shm-usage")  
     options.add_argument("--disable-gpu")            
     options.add_argument("--remote-debugging-port=9222")
-    options.add_argument("--disable-renderer-backgrounding") # 렌더러가 백그라운드에서 잠드는 현상 방지
+    options.add_argument("--disable-renderer-backgrounding")
     options.add_argument("--disable-background-timer-throttling")
     
-    # 이미지 로딩을 차단하여 불필요한 네트워크 대기 시간 최소화
+    # 이미지 로딩 차단으로 네트워크 트래픽 최적화
     options.add_argument("--blink-settings=imagesEnabled=false")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome=120.0.0.0 Safari/537.36")
@@ -65,26 +65,22 @@ def run_scraper():
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
-    # 💡 멍 때리는 시간을 줄이기 위해 브라우저 자체 타임아웃 주기를 20초로 제한
-    driver.set_page_load_timeout(20)
-    driver.set_script_timeout(20)
+    # 💡 [중요] 브라우저 내부 통신 단절을 막기 위해 타임아웃 제한을 120초로 넉넉하게 확장합니다.
+    driver.set_page_load_timeout(120)
+    driver.set_script_timeout(120)
     
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': download_dir})
-    wait = WebDriverWait(driver, 45) # 요소 렌더링 대기는 45초까지 유연하게 설정
+    wait = WebDriverWait(driver, 60) # 요소 대기는 최대 60초
 
     try:
         print(f"🌐 KOCA 345건 전수 수집 시작... ({time.strftime('%H:%M:%S')})")
         
-        # 💡 [렌더러 타임아웃 해결 핵심] 초기 로딩 시 크롬이 던지는 무의미한 타임아웃 에러를 가두어 무시합니다.
-        try:
-            driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
-        except Exception as e:
-            print(f"⚠️ 초기 로딩 타임아웃 발생 (무시하고 계속 진행): {e}")
+        # 정공법으로 페이지 진입 (타임아웃은 120초까지 버팁니다)
+        driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         
-        # 'none' 전략이므로 페이지 로딩 완료 여부와 관계없이 즉시 아래 코드로 넘어와 실제 테이블을 기다립니다.
-        print("⏳ 테이블 로딩 완료 대기 중 (최대 45초)...")
+        print("⏳ 테이블 로딩 완료 대기 중...")
         wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="notamSheet-table"]')))
-        time.sleep(5)  # 내부 JS 데이터가 완전히 안착할 수 있도록 여유 제공
+        time.sleep(5)  # 내부 데이터 안착 대기
 
         last_page_id = ""
 
