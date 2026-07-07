@@ -40,19 +40,20 @@ def run_scraper():
 
     options = Options()
     
-    # 💡 렌더러 타임아웃 버그를 방지하기 위해 eager 전략을 제거하고 none 또는 기본값으로 변경합니다.
-    options.page_load_strategy = 'normal' 
+    # 💡 [렌더러 타임아웃 해결 핵심] 무조건 none 전략을 사용하여 브라우저가 무한 대기에 빠지는 것을 원천 차단
+    options.page_load_strategy = 'none' 
     
-    # 깃허브 가상환경(리눅스) 크래시 및 렌더러 데드락 방지 필수 옵션들
+    # 깃허브 가상환경(리눅스) 크래시 방지 및 최신 헤드리스 모드 옵션
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-dev-shm-usage")  
+    options.add_argument("--disable-gpu")            
     options.add_argument("--remote-debugging-port=9222")
+    options.add_argument("--disable-renderer-backgrounding") # 렌더러가 백그라운드에서 잠드는 현상 방지
+    options.add_argument("--disable-background-timer-throttling")
     
-    # 💡 이미지 로딩을 하드웨어 레벨에서 차단하여 대역폭 부족으로 인한 타임아웃 방지
+    # 이미지 로딩을 차단하여 불필요한 네트워크 대기 시간 최소화
     options.add_argument("--blink-settings=imagesEnabled=false")
-    
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome=120.0.0.0 Safari/537.36")
     
@@ -64,20 +65,26 @@ def run_scraper():
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
-    # 브라우저 자체의 타임아웃 제한
-    driver.set_page_load_timeout(60)
-    driver.set_script_timeout(60)
+    # 💡 멍 때리는 시간을 줄이기 위해 브라우저 자체 타임아웃 주기를 20초로 제한
+    driver.set_page_load_timeout(20)
+    driver.set_script_timeout(20)
     
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': download_dir})
-    wait = WebDriverWait(driver, 60)
+    wait = WebDriverWait(driver, 45) # 요소 렌더링 대기는 45초까지 유연하게 설정
 
     try:
         print(f"🌐 KOCA 345건 전수 수집 시작... ({time.strftime('%H:%M:%S')})")
-        driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         
-        print("⏳ 테이블 로딩 대기 중...")
+        # 💡 [렌더러 타임아웃 해결 핵심] 초기 로딩 시 크롬이 던지는 무의미한 타임아웃 에러를 가두어 무시합니다.
+        try:
+            driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
+        except Exception as e:
+            print(f"⚠️ 초기 로딩 타임아웃 발생 (무시하고 계속 진행): {e}")
+        
+        # 'none' 전략이므로 페이지 로딩 완료 여부와 관계없이 즉시 아래 코드로 넘어와 실제 테이블을 기다립니다.
+        print("⏳ 테이블 로딩 완료 대기 중 (최대 45초)...")
         wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="notamSheet-table"]')))
-        time.sleep(5)  # 내부 JS 데이터가 완전히 안착할 수 있도록 약간의 여유 제공
+        time.sleep(5)  # 내부 JS 데이터가 완전히 안착할 수 있도록 여유 제공
 
         last_page_id = ""
 
@@ -195,7 +202,6 @@ def run_scraper():
                 print(f"⚠️ JSON 저장 실패: {e}")
 
     except Exception as main_error:
-        # 💡 [디버깅 추가] 치명적 오류 발생 시 화면을 캡처하고 에러를 액션에 전달
         print(f"\n❌ 크롤러 런타임 에러 발생: {main_error}\n")
         try:
             driver.save_screenshot("error_screenshot.png")
@@ -203,7 +209,6 @@ def run_scraper():
         except Exception as screenshot_error:
             print(f"⚠️ 스크린샷 캡처 실패: {screenshot_error}")
         
-        # GitHub Actions가 이 빌드를 최종 '실패(X)'로 판단하도록 에러를 명시적으로 상위로 던집니다.
         raise main_error
 
     finally:
