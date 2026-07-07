@@ -39,15 +39,20 @@ def run_scraper():
     os.makedirs(download_dir)
 
     options = Options()
-    # [최적화] 이미지나 무거운 외부 스크립트 로딩을 기다리지 않고 DOM만 완성되면 즉시 다음 단계 진행
-    options.page_load_strategy = 'eager'
     
-    # 💡 [안정화 핵심] 깃허브 가상환경(리눅스) 크래시 방지 및 최신 헤드리스 모드 옵션 추가
+    # 💡 렌더러 타임아웃 버그를 방지하기 위해 eager 전략을 제거하고 none 또는 기본값으로 변경합니다.
+    options.page_load_strategy = 'normal' 
+    
+    # 깃허브 가상환경(리눅스) 크래시 및 렌더러 데드락 방지 필수 옵션들
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")  # 리소스 부족으로 인한 크래시 방지
-    options.add_argument("--disable-gpu")            # 리눅스 가상환경 렌더링 에러 방지
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
     options.add_argument("--remote-debugging-port=9222")
+    
+    # 💡 이미지 로딩을 하드웨어 레벨에서 차단하여 대역폭 부족으로 인한 타임아웃 방지
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome=120.0.0.0 Safari/537.36")
     
