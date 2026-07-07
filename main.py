@@ -39,14 +39,15 @@ def run_scraper():
     os.makedirs(download_dir)
 
     options = Options()
-    # 💡 [최적화 핵심] 이미지나 무거운 외부 스크립트 로딩을 기다리지 않고 DOM만 완성되면 즉시 다음 단계 진행
+    # [최적화] 이미지나 무거운 외부 스크립트 로딩을 기다리지 않고 DOM만 완성되면 즉시 다음 단계 진행
     options.page_load_strategy = 'eager'
     
-    # 💡 [최적화 핵심] 깃허브 가상환경(리눅스 크롬 148 이상 등)에서 성능이 대폭 개선된 최신 헤드리스 모드 적용
+    # 💡 [안정화 핵심] 깃허브 가상환경(리눅스) 크래시 방지 및 최신 헤드리스 모드 옵션 추가
     options.add_argument("--headless=new")
-    
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")  # 리소스 부족으로 인한 크래시 방지
+    options.add_argument("--disable-gpu")            # 리눅스 가상환경 렌더링 에러 방지
+    options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome=120.0.0.0 Safari/537.36")
     
@@ -58,7 +59,7 @@ def run_scraper():
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
-    # [추가] 브라우저 자체의 타임아웃을 60초로 제한 (120초 동안 멍때리는 것 방지)
+    # 브라우저 자체의 타임아웃 제한
     driver.set_page_load_timeout(60)
     driver.set_script_timeout(60)
     
@@ -66,37 +67,33 @@ def run_scraper():
     wait = WebDriverWait(driver, 60)
 
     try:
-        print(f"🌐 KOCA 345건 전수 수집 (td[5] 무조건 타격)... ({time.strftime('%H:%M:%S')})")
+        print(f"🌐 KOCA 345건 전수 수집 시작... ({time.strftime('%H:%M:%S')})")
         driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
         
-        # [수정] 무조건 50초 쉬는 대신, 테이블 요소가 렌더링될 때까지만 대기 (맥시멈 60초)
         print("⏳ 테이블 로딩 대기 중...")
         wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="notamSheet-table"]')))
-        time.sleep(5)  # 내부 JS 데이터가 완전히 안착할 수 있도록 약간의 여유만 제공
+        time.sleep(5)  # 내부 JS 데이터가 완전히 안착할 수 있도록 약간의 여유 제공
 
         last_page_id = ""
 
-        # 최대 10페이지까지 반복 (갱신 안 될 때까지)
+        # 최대 10페이지까지 반복
         for p in range(1, 11): 
             print(f"📄 {p}페이지 작업 시작...")
             
-            # 현재 페이지 ID 확보
             current_id = find_notam_id_in_source(driver.page_source)
             
             if p == 1:
                 last_page_id = current_id
                 print(f"   -> 1페이지 기준 ID 확보: {last_page_id}")
             else:
-                # --- [핵심 수정] 무조건 td[5] 클릭 ---
+                # --- td[5] 클릭 ---
                 try:
                     next_xpath = '//*[@id="notamSheet-table"]/tbody/tr[5]/td/div/table/tbody/tr/td[5]'
                     next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, next_xpath)))
                     
-                    # 화면 중앙으로 이동 후 안정화
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_btn)
                     time.sleep(2)
 
-                    # [마우스 클릭] ActionChains로 정밀 타격
                     ActionChains(driver).move_to_element(next_btn).click().perform()
                     print(f"   -> td[5] '다음' 클릭 완료. 페이지 교체 대기 중...")
                     
@@ -113,7 +110,7 @@ def run_scraper():
                     
                     if not updated:
                         print(f"   ⚠️ 갱신 미확인. (더 이상 페이지가 없거나 클릭 실패)")
-                        break # 데이터가 안 바뀌면 루프 종료
+                        break 
                         
                 except Exception as e:
                     print(f"   -> 다음 페이지 버튼(td[5])을 찾을 수 없음: {e}")
@@ -129,10 +126,9 @@ def run_scraper():
                 renamed = False
                 for _ in range(60): 
                     time.sleep(1)
-                    # 확장자가 .xls 또는 .xlsx인 진짜 다운로드 완료된 파일만 필터링
                     files = [f for f in os.listdir(download_dir) if (f.endswith('.xls') or f.endswith('.xlsx')) and not f.startswith('page_')]
                     if files:
-                        time.sleep(2) # 파일 스트림이 완전히 닫힐 때까지 아주 잠깐 대기
+                        time.sleep(2) 
                         old_path = os.path.join(download_dir, files[0])
                         new_filename = f"page_{p}_notam.xls"
                         os.rename(old_path, os.path.join(download_dir, new_filename))
@@ -174,7 +170,7 @@ def run_scraper():
                     "end_date": str(row.get('End Date UTC', ''))
                 })
 
-            # 최신 NOTAM snapshot JSON 저장 (DOO GPX 호환용)
+            # 최신 NOTAM snapshot JSON 저장
             try:
                 json_output = [
                     {
@@ -183,7 +179,6 @@ def run_scraper():
                         "content": item.get("content", ""),
                         "notam_id": item.get("notam_id", "")
                     }
-                    # 변경 없이 유지
                     for item in notam_list
                 ]
 
@@ -193,6 +188,18 @@ def run_scraper():
                 print(f"💾 JSON 저장 완료: notam-latest.json ({len(json_output)}건)")
             except Exception as e:
                 print(f"⚠️ JSON 저장 실패: {e}")
+
+    except Exception as main_error:
+        # 💡 [디버깅 추가] 치명적 오류 발생 시 화면을 캡처하고 에러를 액션에 전달
+        print(f"\n❌ 크롤러 런타임 에러 발생: {main_error}\n")
+        try:
+            driver.save_screenshot("error_screenshot.png")
+            print("📸 에러 스크린샷 저장 완료: error_screenshot.png")
+        except Exception as screenshot_error:
+            print(f"⚠️ 스크린샷 캡처 실패: {screenshot_error}")
+        
+        # GitHub Actions가 이 빌드를 최종 '실패(X)'로 판단하도록 에러를 명시적으로 상위로 던집니다.
+        raise main_error
 
     finally:
         driver.quit()
