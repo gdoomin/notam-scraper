@@ -40,20 +40,20 @@ def run_scraper():
 
     options = Options()
     
-    # 💡 [수정] none 전략이 브라우저를 먹통으로 만들어 기본값(normal)으로 복구합니다.
-    options.page_load_strategy = 'normal' 
+    # 💡 [렌더러 버그 해결 핵심 1] 최신 헤드리스 모드 대신 데드락 버그가 없는 전통적인 구형 헤드리스 모드를 사용합니다.
+    options.add_argument("--headless=old")
     
-    # 깃허브 가상환경(리눅스) 크래시 방지 및 최신 헤드리스 모드 옵션
-    options.add_argument("--headless=new")
+    # 깃허브 가상환경(리눅스) 환경 안전성 확보
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")  
     options.add_argument("--disable-gpu")            
-    options.add_argument("--remote-debugging-port=9222")
-    options.add_argument("--disable-renderer-backgrounding")
-    options.add_argument("--disable-background-timer-throttling")
     
-    # 이미지 로딩 차단으로 네트워크 트래픽 최적화
-    options.add_argument("--blink-settings=imagesEnabled=false")
+    # 💡 [렌더러 버그 해결 핵심 2] 렌더러가 멍 때리는 현상을 유발하는 기능을 원천 차단
+    options.add_argument("--disable-site-isolation-trials") # 사이트 격리 기능 비활성화로 자원 확보
+    options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--blink-settings=imagesEnabled=false") # 이미지 로딩 차단
+    
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome=120.0.0.0 Safari/537.36")
     
@@ -65,18 +65,21 @@ def run_scraper():
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
-    # 💡 [중요] 브라우저 내부 통신 단절을 막기 위해 타임아웃 제한을 120초로 넉넉하게 확장합니다.
-    driver.set_page_load_timeout(120)
-    driver.set_script_timeout(120)
+    # 브라우저 내부 타임아웃 주기는 다시 타이트하게 설정하여 가두어 버립니다.
+    driver.set_page_load_timeout(30)
+    driver.set_script_timeout(30)
     
     driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': download_dir})
-    wait = WebDriverWait(driver, 60) # 요소 대기는 최대 60초
+    wait = WebDriverWait(driver, 45) # 요소 대기는 최대 45초
 
     try:
         print(f"🌐 KOCA 345건 전수 수집 시작... ({time.strftime('%H:%M:%S')})")
         
-        # 정공법으로 페이지 진입 (타임아웃은 120초까지 버팁니다)
-        driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
+        # 💡 [렌더러 버그 해결 핵심 3] driver.get() 시 발생하는 타임아웃 예외를 완전히 격리하여 무시합니다.
+        try:
+            driver.get("https://aim.koca.go.kr/xNotam/index.do?type=search2&language=ko_KR")
+        except Exception as e:
+            print(f"⚠️ 초기 로딩 타임아웃 또는 렌더러 경고 발생 (무시하고 데이터 수집 단계로 진입): {e}")
         
         print("⏳ 테이블 로딩 완료 대기 중...")
         wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="notamSheet-table"]')))
