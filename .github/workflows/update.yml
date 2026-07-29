@@ -1,7 +1,8 @@
 name: NOTAM_AUTO_UPDATE
 on:
   schedule:
-    - cron: '0 * * * *'
+    # 한국 시간(KST) 기준: 07:00, 10:00, 13:00, 16:00
+    - cron: '0 22,1,4,7 * * *'
   workflow_dispatch:
 
 permissions:
